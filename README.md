@@ -12,6 +12,7 @@ The filter buttons appear on their own once there are games in more than one sta
 
 ## Hosting
 
+- This repo is named pigsgonnablow.github.io, so it is the account's main site: any other repo with Pages turned on shows up at lmnop.games/<repo-name>.
 - GitHub repo with Pages turned on (Settings → Pages → deploy from the `main` branch, root folder).
 - The `CNAME` file holds `lmnop.games`.
 - In Cloudflare DNS for lmnop.games, add the four GitHub Pages A records (185.199.108.153, .109.153, .110.153, .111.153) and a `www` CNAME to `<account>.github.io`, with the proxy set to "DNS only".
