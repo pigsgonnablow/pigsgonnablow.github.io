@@ -16,11 +16,11 @@ window.LMNOP_GAMES = [
   },
   {
     title: "Bandwick",
-    tagline: "A short description goes here.",
+    tagline: "Watch a band of people settle a wild island as they forage, build, feud and split into new bands.",
     status: "prototype",
-    url: "",
-    image: "",
+    url: "https://pigsgonnablow.github.io/bandwick/",
+    image: "assets/games/bandwick.jpg",
     color: "#4fb3ff",
-    tags: [],
+    tags: ["Simulation", "Desktop"],
   },
 ];
