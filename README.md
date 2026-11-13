@@ -7,6 +7,8 @@ The LMNOP Games studio hub. It's a plain static site, so there's no build step, 
 1. Put a screenshot in `assets/games/` (16:10 works best, about 800px wide).
 2. Open `games.js` and copy one of the blocks.
 3. Fill in the title, a one-line tagline, the status (`playable`, `prototype` or `coming-soon`), the link and the picture.
+   A game in another pigsgonnablow repo with Pages turned on lives at `https://lmnop.games/<repo-name>/`, so link that. Leave `url` out to show "Coming soon".
+4. Push to `main`. The site updates in a minute or two.
 
 The filter buttons appear on their own once there are games in more than one status.
 

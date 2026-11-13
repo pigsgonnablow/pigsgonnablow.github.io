@@ -23,4 +23,13 @@ window.LMNOP_GAMES = [
     color: "#4fb3ff",
     tags: ["Simulation", "Desktop"],
   },
+  {
+    title: "Forest Sim",
+    tagline: "Wander a low-poly forest, gather sticks, grass and ore, and craft your first tools.",
+    status: "prototype",
+    url: "https://lmnop.games/pigsmmo/",
+    image: "assets/games/forestsim.jpg",
+    color: "#5aa469",
+    tags: ["Sandbox", "3D", "Desktop"],
+  },
 ];
