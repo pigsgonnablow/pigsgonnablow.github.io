@@ -8,7 +8,12 @@ The LMNOP Games studio hub. It's a plain static site, so there's no build step, 
 2. Open `games.js` and copy one of the blocks.
 3. Fill in the title, a one-line tagline, the status (`playable`, `prototype` or `coming-soon`), the link and the picture.
    A game in another pigsgonnablow repo with Pages turned on lives at `https://lmnop.games/<repo-name>/`, so link that. Leave `url` out to show "Coming soon".
-4. Push to `main`. The site updates in a minute or two.
+4. In `index.html`, add the game to the `<noscript>` list too (title, link, tagline). That list is what search engines and visitors without JavaScript see.
+5. Push to `main`. The site updates in a minute or two.
+
+`app.js` only links `http` and `https` urls, so a game whose url is anything else shows "Coming soon".
+
+A visit to a page that doesn't exist shows `404.html`.
 
 The filter buttons appear on their own once there are games in more than one status.
 

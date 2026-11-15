@@ -3,18 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'none'">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
   <title>LMNOP Games</title>
   <meta name="description" content="LMNOP Games is an independent game studio. Play our games and prototypes.">
   <meta name="theme-color" content="#121316">
+  <link rel="canonical" href="https://lmnop.games/">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://lmnop.games/">
+  <meta property="og:site_name" content="LMNOP Games">
   <meta property="og:title" content="LMNOP Games">
   <meta property="og:description" content="Independent games and prototypes.">
   <meta property="og:image" content="https://lmnop.games/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="LMNOP Games logo">
+  <meta name="twitter:card" content="summary_large_image">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <header class="hero">
-    <img class="logo" src="assets/logo.svg" alt="LMNOP Games">
+    <h1 class="title"><img class="logo" src="assets/logo.svg" alt="LMNOP Games"></h1>
     <p class="tagline">Independent games and prototypes.</p>
   </header>
 
@@ -22,9 +32,17 @@
     <section id="games" class="games">
       <div class="section-head">
         <h2>Games</h2>
-        <div class="filters" role="tablist" aria-label="Filter games"></div>
+        <div class="filters" role="group" aria-label="Filter games"></div>
       </div>
       <div class="grid" id="grid"></div>
+      <noscript>
+        <!-- Keep in step with games.js: shown to visitors and crawlers without JavaScript. -->
+        <ul class="nojs">
+          <li><a href="https://www.pigsgonnablow.com">Pigs Gonna Blow!</a>: Pop pigs, unlock skins, and climb the leaderboard.</li>
+          <li><a href="https://lmnop.games/bandwick/">Bandwick</a> (prototype): Watch a band of people settle a wild island as they forage, build, feud and split into new bands.</li>
+          <li><a href="https://lmnop.games/pigsmmo/">Forest Sim</a> (prototype): Wander a low-poly forest, gather sticks, grass and ore, and craft your first tools.</li>
+        </ul>
+      </noscript>
     </section>
   </main>
 
