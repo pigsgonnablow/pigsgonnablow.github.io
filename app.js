@@ -1,6 +1,11 @@
 (function () {
-  const games = window.LMNOP_GAMES || [];
   const LABELS = { playable: "Playable", prototype: "Prototype", "coming-soon": "Coming soon" };
+  // Forgive typos like "Prototype" or "coming soon"; anything still unknown is shown as a prototype.
+  const games = (window.LMNOP_GAMES || []).map(g => {
+    let status = String(g.status || "").trim().toLowerCase().replace(/\s+/g, "-");
+    if (!LABELS[status]) { console.warn(`games.js: "${g.title}" has unknown status "${g.status}", showing it as a prototype.`); status = "prototype"; }
+    return { ...g, status };
+  });
   const FILTERS = [["all", "All"], ["playable", "Playable"], ["prototype", "Prototypes"], ["coming-soon", "Coming soon"]];
   const grid = document.getElementById("grid");
   const bar = document.querySelector(".filters");
@@ -28,7 +33,7 @@
       if (i >= 3) img.loading = "lazy"; // the first row is on screen right away, so load it immediately
       art.append(img);
     } else art.append(el("span", "initial", title.charAt(0)));
-    art.append(el("span", "badge " + g.status, LABELS[g.status] || g.status));
+    art.append(el("span", "badge " + g.status, LABELS[g.status]));
     const body = el("div", "body");
     body.append(el("h3", "", title), el("p", "", g.tagline));
     const tags = el("ul", "tags");

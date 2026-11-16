@@ -10,6 +10,11 @@ The LMNOP Games studio hub. It's a plain static site, so there's no build step, 
    A game in another pigsgonnablow repo with Pages turned on lives at `https://lmnop.games/<repo-name>/`, so link that. Leave `url` out to show "Coming soon".
 4. In `index.html`, add the game to the `<noscript>` list too (title, link, tagline). That list is what search engines and visitors without JavaScript see.
 5. Push to `main`. The site updates in a minute or two.
+6. Check the "Check game list" run on the repo's Actions tab. It fails if the `<noscript>` list and `games.js` don't match (same titles and links), or if a status isn't one of the three above. Run it yourself first with `node .github/scripts/check-games.js`.
+
+Pictures must live in this repo (in `assets/games/`). The page's security policy only loads images from lmnop.games itself, so a picture hosted on another site won't show up.
+
+If a status has a typo, like `Prototype` or `coming soon`, the page still works it out. Anything it can't recognize shows up as a prototype.
 
 `app.js` only links `http` and `https` urls, so a game whose url is anything else shows "Coming soon".
 
