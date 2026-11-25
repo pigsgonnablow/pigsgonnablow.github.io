@@ -537,9 +537,10 @@ function kiwiOpen(origin, viaRelay, tryAlt, from) {
   kiwiClose();
   const ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), path = s => `${tryAlt ? '' : '/kiwi'}/${ts}/${s}`;
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(wsBase + path(s))}` : wsBase + path(s);
-  let opened = false, failed = false;
-  const fail = () => { if (opened || failed) return; failed = true; kiwiClose();
-    if (!tryAlt) return kiwiOpen(origin, viaRelay, true, from);
+  let opened = false, failed = false, heard = false, guard = null;
+  // force: give up even though a socket opened (the receiver never answered); noAlt: skip the older path format.
+  const fail = (force, noAlt) => { if ((opened && !force) || failed) return; failed = true; clearTimeout(guard); kiwiClose();
+    if (!tryAlt && !noAlt) return kiwiOpen(origin, viaRelay, true, from);
     if (current) return tryNext(`Couldn't connect to ${current.name}.`, from);
     status(viaRelay ? "The relay couldn't reach that receiver." : "Couldn't reach that receiver directly. An https page can't open a plain ws:// receiver, and this Claude preview blocks other sites entirely; open the page from the included server instead.", true); };
   try { snd = new WebSocket(url('SND')); wf = new WebSocket(url('W/F')); } catch { return fail(); }
@@ -547,7 +548,9 @@ function kiwiOpen(origin, viaRelay, tryAlt, from) {
     w.onopen = () => { opened = true; w.send('SET auth t=kiwi p='); };
     w.onclose = () => { if (opened && w === snd) { kiwiClose(); status('The receiver closed the connection. Pick it again or try another.', true); } }; }
   const S = snd, F = wf;
+  guard = setTimeout(() => { if (!heard && S === snd) fail(true, true); }, 8000);  // no reply in 8 s: move on
   S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
+    if (!heard) { heard = true; clearTimeout(guard); }
     if (tag === 'MSG') { const m = parseMsg(e.data);
       if (m.too_busy !== undefined || m.badp === '1') { const why = m.too_busy !== undefined ? 'is full right now.' : 'needs a password.'; kiwiClose();
         return current ? tryNext(`${current.name} ${why}`, from) : status(`That receiver ${why}`, true); }
