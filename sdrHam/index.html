@@ -356,7 +356,7 @@ function stopDemoAudio() { clearInterval(demoTimer); demoTimer = null; }
 const API = (document.querySelector('meta[name=radio-api]')?.content || '').replace(/\/+$/, '');
 const RELAY = (API || location.origin).replace(/^http/, 'ws') + '/kiwi-relay';
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-let RX = [], dirMode = 'loading', selected = null, tried = new Set(), current = null;
+let RX = [], dirMode = 'loading', selected = null, tried = new Set(), current = null, fallbackNote = '';
 const SAMPLE_CITIES = [['Twente, NL', 52.24, 6.85], ['Somerset, UK', 51.18, -2.55], ['Bavaria, DE', 48.14, 11.58], ['Lapland, FI', 66.5, 25.7],
   ['Tuscany, IT', 43.3, 11.3], ['Andalusia, ES', 37.4, -5.98], ['Tromsø, NO', 69.65, 18.96], ['Kraków, PL', 50.06, 19.94], ['Crete, GR', 35.24, 24.8],
   ['Vermont, US', 44.26, -72.58], ['Ohio, US', 40.12, -82.93], ['Mojave, US', 35.05, -117.6], ['Colorado, US', 39.74, -104.99], ['Texas, US', 30.27, -97.74],
@@ -511,12 +511,13 @@ function tryNext(why, from) {
   const next = pool[0];
   if (tried.size >= 3 || !next) { current = null; return status(`${why} No nearby receiver answered either; pick another one.`, true); }
   const km = from && usable(from) && usable(next) ? ` (${Math.round(gcKm(from, next)).toLocaleString()} km away)` : '';
+  fallbackNote = `${why} Switched to the nearest free receiver${km}.`;
   status(`${why} Trying the nearest free one instead: ${next.name}${km}…`); select(next, true); connectRx(next, true, from);
 }
 let connectSeq = 0;
 async function connectRx(rx, auto, origFrom) {
   const seq = ++connectSeq;
-  if (!auto) tried = new Set(); tried.add(rx.origin); current = rx; const from = origFrom || rx;
+  if (!auto) { tried = new Set(); fallbackNote = ''; } tried.add(rx.origin); current = rx; const from = origFrom || rx;
   if (dirMode === 'sample' && rx.origin.endsWith('.invalid:8073')) { current = null;
     return status('These are sample receivers. Run the included server (npm start) and open the page from it to load the real directory and connect.', true); }
   if (!covers(rx)) setTune(Math.min(Math.max(st.tune, rx.lo + 5000), rx.hi - 5000), true);
@@ -524,7 +525,7 @@ async function connectRx(rx, auto, origFrom) {
   // Use the relay only when the browser can't connect itself: an https page can't open a plain ws:// receiver.
   // Direct connections spread load and keep each listener's own IP, which receiver owners use for fair-use limits.
   const viaRelay = listed && location.protocol === 'https:' && rx.origin.startsWith('http:');
-  if (listed) { status(`Checking ${rx.name}…`);
+  if (listed) { status(`${fallbackNote ? fallbackNote + ' ' : ''}Checking ${rx.name}…`);
     // The slot check is advisory: if it can't get an answer, still try the receiver itself.
     try { const s = await (await fetch(`${API}/api/status?url=${encodeURIComponent(rx.origin)}`)).json();
       if (seq !== connectSeq) return;
@@ -559,7 +560,7 @@ function kiwiOpen(origin, viaRelay, tryAlt, from) {
       if (m.audio_rate) { S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
         S.send('SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50'); S.send('SET squelch=0 max=0');
         S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune();
-        status(`Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`); }
+        status(`${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`); }
     } else if (tag === 'SND' && listening && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) { const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
       for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; play(out, kiwiRate); } };
   F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
