@@ -287,6 +287,7 @@ $('power').onclick = async () => {
   try { ensureAudio(); listening = !listening;
     if (listening) await ctx.resume(); else await ctx.suspend();
   } catch (err) { listening = false; const msg = 'Audio could not start in this browser: ' + err.message; status(msg, true); $('what').textContent = msg; }
+  resetIdle();
   $('power').textContent = listening ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', listening); $('power').setAttribute('aria-pressed', listening);
 };
 
@@ -675,7 +676,10 @@ function kiwiCenter() {
   if (Math.abs(cf - span / 2 - st.lo) > 1) { texData.fill(0); tex.needsUpdate = true; }  // old rows belong to the old span
   setSpan(cf - span / 2, cf + span / 2, 'live');
 }
-function resetIdle() { clearTimeout(idle); idle = setTimeout(() => { disconnect('Disconnected after 30 idle minutes to free the receiver slot.'); }, 30 * 60e3); }
+// Free the receiver slot after 30 minutes connected with Listen off. Someone listening is never cut off by this page;
+// the receiver's owner may still set their own time limits.
+function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
+  idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
 function kiwiClose() { if (scan) { clearTimeout(scan.timer); scan = null; }
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connect').textContent = 'Connect'; $('connectHost').textContent = 'Connect'; }
@@ -694,7 +698,7 @@ function tryNext(why, from) {
 let connectSeq = 0;
 async function connectRx(rx, auto, origFrom) {
   const seq = ++connectSeq;
-  if (!auto) { tried = new Set(); fallbackNote = ''; } tried.add(rx.origin); current = rx; const from = origFrom || rx;
+  if (!auto) { tried = new Set(); fallbackNote = ''; drops = []; } tried.add(rx.origin); current = rx; const from = origFrom || rx;
   if (!covers(rx)) setTune(Math.min(Math.max(st.tune, rx.lo + 5000), rx.hi - 5000), true);
   const listed = dirMode === 'server' && RX.some(r => r.origin === rx.origin);
   // Use the relay only when the browser can't connect itself: an https page can't open a plain ws:// receiver.
@@ -709,43 +713,76 @@ async function connectRx(rx, auto, origFrom) {
   if (seq !== connectSeq) return;   // cancelled, or another receiver was picked meanwhile
   ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
 }
-function kiwiOpen(origin, viaRelay, from) {
-  kiwiClose(); kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true; found.clear();   // a new receiver hears a different band
-  const ts = Date.now(), wsBase = origin.replace(/^http/, 'ws');
+// Messages a receiver sends just before refusing or ending a session (as handled by the official kiwiclient).
+const BADP = { 1: 'needs a password (or its password-free slots are all taken).', 2: 'is still starting up. Try again in a moment.',
+  5: 'allows only one listener per address.', 6: 'is updating its database. Try again in a minute.' };
+function endedBy(m, viaRelay) {
+  if (m.too_busy !== undefined && +m.too_busy > 0) return 'is full right now.';
+  if (m.redirect !== undefined) return 'is full and redirected elsewhere.';
+  if (m.down !== undefined) return 'is down for maintenance.';
+  if (m.camp_disconnect !== undefined) return 'ended the shared session.';
+  if (m.badp === '5' && viaRelay) return 'allows only one listener per address, and everyone using this site shares the relay’s address.';
+  if (m.badp !== undefined && m.badp !== '0') return BADP[m.badp] || 'turned the connection away.';
+  return null;
+}
+const RETRY_MS = [2000, 6000, 15000, 30000];   // ~50 s in all: long enough to ride out a server restart
+let drops = [];                                  // times of recent unexpected drops, to stop retrying a receiver that keeps dropping
+// retry: 0 for a fresh connection, 1..3 when reconnecting after an unexpected drop (same receiver, frequency and mode).
+function kiwiOpen(origin, viaRelay, from, retry = 0) {
+  kiwiClose(); kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
+  if (!retry) found.clear();   // a new receiver hears a different band; a reconnect keeps what was found
+  const seq = connectSeq, ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), name = current ? current.name : 'The receiver';
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(`${wsBase}/kiwi/${ts}/${s}`)}` : `${wsBase}/kiwi/${ts}/${s}`;
   // "live" means the receiver accepted us (it sent audio_rate). Anything that ends the attempt before that is a failed
   // connection: a refused socket, the relay closing because it couldn't reach the receiver, a busy or password reply, or silence.
-  let live = false, failed = false, busy = false, gotRow = false, guard = null, wfGuard = null;
-  const fail = why => { if (live || failed) return; failed = true; clearTimeout(guard); kiwiClose();
+  let live = false, failed = false, busy = false, ended = null, gotRow = false, guard = null, wfGuard = null;
+  const reconnect = (why, n) => {   // unexpected drop: try the same receiver again a few times, then give up and say so
+    kiwiClose();
+    if (n > RETRY_MS.length) return status(`${why} Couldn't reconnect to ${name}. Pick it again or try another.`, true);
+    status(`${why} Reconnecting to ${name} (try ${n} of ${RETRY_MS.length})…`, true);
+    setTimeout(() => { if (seq === connectSeq) kiwiOpen(origin, viaRelay, from, n); }, RETRY_MS[n - 1]);
+  };
+  const fail = why => { if (live || failed) return; failed = true; clearTimeout(guard);
+    if (retry && !ended) return reconnect('The connection dropped.', retry + 1);   // still trying to get back on the same receiver
+    kiwiClose();
+    if (retry) return status(`${name} ${why}`, true);
     if (current) return tryNext(`${current.name} ${why}`, from);
     status(`That receiver ${why}${!viaRelay && location.protocol === 'https:' ? ' A page served over https can only reach receivers in the directory.' : ''}`, true); };
   try { snd = new WebSocket(url('SND')); wf = new WebSocket(url('W/F')); } catch { return fail("couldn't be reached."); }
   const S = snd, F = wf;
+  // Keepalives ride on incoming data, once a second per socket, like the official client: browsers slow timers in
+  // background tabs, but they still deliver messages. The 5-second timer below is only a backstop.
+  const ka = w => { const t = Date.now(); if (w.readyState === 1 && t - (w.ka || 0) >= 1000) { w.ka = t; w.send('SET keepalive'); } };
   for (const w of [S, F]) { w.binaryType = 'arraybuffer'; w.onopen = () => w.send('SET auth t=kiwi p=');
     w.onerror = () => { if (S === snd) fail("couldn't be reached."); }; }
-  S.onclose = () => { if (S !== snd) return;
-    if (!live) return fail(busy ? 'is full right now.' : "didn't accept the connection.");
-    kiwiClose(); status('The receiver closed the connection. Pick it again or try another.', true); };
+  S.onclose = e => { if (S !== snd) return;
+    if (!live) return fail(ended || (busy ? 'is full right now.' : "didn't accept the connection."));
+    if (ended) { kiwiClose(); return status(`${name} ${ended}`, true); }            // the receiver said why: respect it
+    if (e.reason === 'session time limit') { kiwiClose(); return status('The relay’s 4-hour session limit was reached. Connect again to keep listening.', true); }
+    const t = Date.now(); drops = drops.filter(d => t - d < 120e3); drops.push(t);
+    if (drops.length > 3) { kiwiClose(); return status(`${name} keeps dropping the connection. Try another receiver.`, true); }
+    reconnect('The connection dropped.', 1);                                          // network blip, server restart, phone sleep…
+  };
   F.onclose = () => { if (F !== wf || !live) return; wf = null; status('The receiver stopped sending its waterfall; audio continues.', true); };
   guard = setTimeout(() => { if (S === snd) fail("didn't answer."); }, 8000);
-  S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
+  S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; ka(S); const tag = new TextDecoder().decode(e.data.slice(0, 3));
     if (tag === 'MSG') { const m = parseMsg(e.data);
-      // too_busy=N with N > 0 means every channel is taken. too_busy=0 is sent by some receivers whose
-      // password-free channels are all in use; it may still let us in, so wait and see whether it closes.
-      if (m.too_busy !== undefined) { busy = true; if (+m.too_busy > 0) return fail('is full right now.'); }
-      if (m.badp !== undefined && m.badp !== '0') return fail(m.badp === '1' ? 'needs a password.' : 'turned the connection away.');
+      // too_busy=0 is sent by some receivers whose password-free channels are all in use; it may still let us in,
+      // so remember it and only call the receiver full if it then closes.
+      if (m.too_busy !== undefined) busy = true;
+      const why = endedBy(m, viaRelay); if (why) { ended = why; if (!live) return fail(why); }
       if (m.bandwidth) kiwiBw = +m.bandwidth;
       if (m.sample_rate) kiwiRate = Math.round(+m.sample_rate);
       if (m.audio_rate && !live) { live = true; clearTimeout(guard);
         S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
         S.send('SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50'); S.send('SET squelch=0 max=0');
         S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune();
-        status(`${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`);
+        status(retry ? `Reconnected to ${name}.` : `${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`);
         wfGuard = setTimeout(() => { if (S === snd && !gotRow) status("Connected, but this receiver isn't sending a waterfall right now. Audio still works.", true); }, 8000); }
     } else if (tag === 'SND' && listening && e.data.byteLength > 10 && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) {
       const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
       for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; play(out, kiwiRate); } };
-  F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
+  F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; ka(F); const tag = new TextDecoder().decode(e.data.slice(0, 3));
     if (tag === 'MSG') { const m = parseMsg(e.data);
       if (m.bandwidth) kiwiBw = +m.bandwidth;
       if (+m.wf_fft_size > 0) wfFft = +m.wf_fft_size;
@@ -762,8 +799,8 @@ function kiwiOpen(origin, viaRelay, from) {
       const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
       for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
       pushRow(r); } };
-  keep = setInterval(() => { for (const w of [snd, wf]) if (w && w.readyState === 1) w.send('SET keepalive'); }, 5000);
-  $('connect').textContent = $('connectHost').textContent = 'Disconnect'; resetIdle(); status('Connecting…');
+  keep = setInterval(() => { for (const w of [snd, wf]) if (w) ka(w); }, 5000);
+  $('connect').textContent = $('connectHost').textContent = 'Disconnect'; resetIdle(); if (!retry) status('Connecting…');
 }
 $('connect').onclick = () => { if (snd) return disconnect('Disconnected.'); if (selected) connectRx(selected, false); };
 $('connectHost').onclick = () => {
