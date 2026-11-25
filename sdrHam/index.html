@@ -504,13 +504,19 @@ function kiwiCenter() {
 function resetIdle() { clearTimeout(idle); idle = setTimeout(() => { kiwiClose(); status('Disconnected after 30 idle minutes to free the receiver slot.'); }, 30 * 60e3); }
 function kiwiClose() { for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connect').textContent = 'Connect'; $('connectHost').textContent = 'Connect'; }
-function tryNext(why) {
-  const next = ranked().find(r => !tried.has(r.origin));
-  if (tried.size >= 3 || !next) { current = null; return status(`${why} No other free receiver answered; try again in a minute.`, true); }
-  status(`${why} Trying ${next.name}…`); select(next, true); connectRx(next, true);
+// If the receiver you picked can't take you, move to the closest free one and say so plainly.
+function tryNext(why, from) {
+  const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0);
+  if (from && usable(from)) pool.sort((a, b) => (usable(a) ? gcKm(from, a) : 1e9) - (usable(b) ? gcKm(from, b) : 1e9));
+  const next = pool[0];
+  if (tried.size >= 3 || !next) { current = null; return status(`${why} No nearby receiver answered either; pick another one.`, true); }
+  const km = from && usable(from) && usable(next) ? ` (${Math.round(gcKm(from, next)).toLocaleString()} km away)` : '';
+  status(`${why} Trying the nearest free one instead: ${next.name}${km}…`); select(next, true); connectRx(next, true, from);
 }
-async function connectRx(rx, auto) {
-  if (!auto) tried = new Set(); tried.add(rx.origin); current = rx;
+let connectSeq = 0;
+async function connectRx(rx, auto, origFrom) {
+  const seq = ++connectSeq;
+  if (!auto) tried = new Set(); tried.add(rx.origin); current = rx; const from = origFrom || rx;
   if (dirMode === 'sample' && rx.origin.endsWith('.invalid:8073')) { current = null;
     return status('These are sample receivers. Run the included server (npm start) and open the page from it to load the real directory and connect.', true); }
   if (!covers(rx)) setTune(Math.min(Math.max(st.tune, rx.lo + 5000), rx.hi - 5000), true);
@@ -519,20 +525,22 @@ async function connectRx(rx, auto) {
   // Direct connections spread load and keep each listener's own IP, which receiver owners use for fair-use limits.
   const viaRelay = listed && location.protocol === 'https:' && rx.origin.startsWith('http:');
   if (listed) { status(`Checking ${rx.name}…`);
+    // The slot check is advisory: if it can't get an answer, still try the receiver itself.
     try { const s = await (await fetch(`${API}/api/status?url=${encodeURIComponent(rx.origin)}`)).json();
-      if (s.error) return tryNext(`${rx.name} isn't answering.`);
-      if (s.offline || (s.max && s.users >= s.max)) { rx.users = s.users; gDirty = true; return tryNext(`${rx.name} just filled up.`); }
-    } catch { return tryNext(`${rx.name} isn't answering.`); } }
-  ensureAudio(); kiwiOpen(rx.origin, viaRelay, false);
+      if (seq !== connectSeq) return;
+      if (!s.error && (s.offline || (s.max && s.users >= s.max))) { rx.users = s.users; gDirty = true; return tryNext(`${rx.name} is full right now.`, from); }
+    } catch {}
+    if (seq !== connectSeq) return; }
+  ensureAudio(); kiwiOpen(rx.origin, viaRelay, false, from);
 }
-function kiwiOpen(origin, viaRelay, tryAlt) {
+function kiwiOpen(origin, viaRelay, tryAlt, from) {
   kiwiClose();
   const ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), path = s => `${tryAlt ? '' : '/kiwi'}/${ts}/${s}`;
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(wsBase + path(s))}` : wsBase + path(s);
   let opened = false, failed = false;
   const fail = () => { if (opened || failed) return; failed = true; kiwiClose();
-    if (!tryAlt) return kiwiOpen(origin, viaRelay, true);
-    if (current) return tryNext(`Couldn't open ${current.name}.`);
+    if (!tryAlt) return kiwiOpen(origin, viaRelay, true, from);
+    if (current) return tryNext(`Couldn't connect to ${current.name}.`, from);
     status(viaRelay ? "The relay couldn't reach that receiver." : "Couldn't reach that receiver directly. An https page can't open a plain ws:// receiver, and this Claude preview blocks other sites entirely; open the page from the included server instead.", true); };
   try { snd = new WebSocket(url('SND')); wf = new WebSocket(url('W/F')); } catch { return fail(); }
   for (const w of [snd, wf]) { w.binaryType = 'arraybuffer'; w.onerror = () => { if (w === snd || w === wf) fail(); };
@@ -542,7 +550,7 @@ function kiwiOpen(origin, viaRelay, tryAlt) {
   S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
     if (tag === 'MSG') { const m = parseMsg(e.data);
       if (m.too_busy !== undefined || m.badp === '1') { const why = m.too_busy !== undefined ? 'is full right now.' : 'needs a password.'; kiwiClose();
-        return current ? tryNext(`${current.name} ${why}`) : status(`That receiver ${why}`, true); }
+        return current ? tryNext(`${current.name} ${why}`, from) : status(`That receiver ${why}`, true); }
       if (m.bandwidth) kiwiBw = +m.bandwidth;
       if (m.sample_rate) kiwiRate = Math.round(+m.sample_rate);
       if (m.audio_rate) { S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
@@ -561,7 +569,7 @@ function kiwiOpen(origin, viaRelay, tryAlt) {
   keep = setInterval(() => { for (const w of [snd, wf]) if (w && w.readyState === 1) w.send('SET keepalive'); }, 5000);
   $('connect').textContent = $('connectHost').textContent = 'Disconnect'; resetIdle(); status('Connecting…');
 }
-$('connect').onclick = () => { if (snd) { kiwiClose(); current = null; return status('Disconnected.'); } if (selected) connectRx(selected, false); };
+$('connect').onclick = () => { if (snd) { kiwiClose(); current = null; connectSeq++; return status('Disconnected.'); } if (selected) connectRx(selected, false); };
 $('connectHost').onclick = () => {
   if (snd) { kiwiClose(); current = null; return status('Disconnected.'); }
   const raw = $('host').value.trim(); const m = /^(?:(wss?|https?):\/\/)?([^/:\s]+)(?::(\d+))?/i.exec(raw);
