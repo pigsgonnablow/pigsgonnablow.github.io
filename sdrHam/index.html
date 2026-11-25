@@ -46,7 +46,7 @@ header.band{padding-bottom:14px}
 .steps{display:inline-flex;gap:6px}
 .steps .btn{padding:0 12px;min-width:52px}
 input,select{min-height:44px;font:16px "IBM Plex Sans",sans-serif;background:#0c151d;color:var(--ink);border:1px solid var(--line);border-radius:10px;padding:0 12px}
-input[type=range]{padding:0;accent-color:var(--coral);min-height:auto;border:0;background:none;width:130px}
+input[type=range]{padding:0;accent-color:var(--coral);min-height:44px;border:0;background:none;width:130px}
 label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;gap:8px}
 :focus-visible{outline:2px solid var(--gold);outline-offset:2px}
 .chips{display:flex;flex-wrap:wrap;gap:8px}
@@ -102,7 +102,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 
 <section class="band deck"><div class="wrap">
   <div class="row">
-    <button class="btn main" id="power">▶ Listen</button>
+    <button class="btn main" id="power" aria-pressed="false">▶ Listen</button>
     <div class="seg" role="group" aria-label="Source"><button id="srcDemo" aria-pressed="true">Demo band</button><button id="srcLive" aria-pressed="false">Live KiwiSDR</button></div>
     <div class="steps"><button class="btn" data-step="-1">−1k</button><button class="btn" data-step="-0.1">−.1</button><button class="btn" data-step="0.1">+.1</button><button class="btn" data-step="1">+1k</button></div>
     <label>Freq <input id="freq" inputmode="decimal" size="9" value="7030.00" aria-label="Frequency in kHz"> kHz</label>
@@ -130,7 +130,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <details class="manual"><summary>Connect by address instead</summary>
       <div class="row"><label>Receiver <input id="host" placeholder="host.example.com:8073" autocomplete="off"></label><button class="btn" id="connectHost">Connect</button></div>
     </details>
-    <p class="status" id="status">Pick a dot on the globe or a receiver from the list. The list only shows receivers that cover the frequency you're tuned to.</p>
+    <p class="status" id="status" role="status" aria-live="polite">Pick a dot on the globe or a receiver from the list. The list only shows receivers that cover the frequency you're tuned to.</p>
   </div>
 </div></section>
 
@@ -150,7 +150,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 {
 const $ = id => document.getElementById(id);
 const BINS = 1024, ROWS = 256, RATE = 12000, TAU = Math.PI * 2;
-const st = { src: 'demo', tune: 7030000, lo: 7000000, hi: 7200000, bw: 3000 };
+const st = { src: 'demo', tune: 7030000, lo: 7000000, hi: 7200000, pb: [-650, 2200] };  // pb: passband edges relative to the dial, Hz
 
 /* ---------- three.js terrain ---------- */
 const canvas = $('gl'), stage = $('stage');
@@ -169,16 +169,16 @@ const tex = new THREE.DataTexture(texData, BINS, ROWS, THREE.RedFormat, THREE.Un
 tex.minFilter = tex.magFilter = THREE.LinearFilter; tex.needsUpdate = true;
 let head = 0;
 const W = 10, D = 7, H = 1.7;
-const uni = { uTex: { value: tex }, uHead: { value: 0 }, uRows: { value: ROWS }, uH: { value: H }, uTune: { value: 0.15 }, uBw: { value: 0.01 } };
+const uni = { uTex: { value: tex }, uHead: { value: 0 }, uRows: { value: ROWS }, uH: { value: H }, uTune: { value: 0.15 }, uLo: { value: -0.003 }, uHi: { value: 0.011 } };
 const mat = new THREE.ShaderMaterial({ uniforms: uni,
   vertexShader: `uniform sampler2D uTex;uniform float uHead,uRows,uH;varying float vV;varying vec2 vUv;
   void main(){vUv=uv;float r=mod(uHead-uv.y*(uRows-1.0)+uRows,uRows);float v=texture2D(uTex,vec2(uv.x,(r+0.5)/uRows)).r;
   vV=v;vec3 p=position;p.z+=pow(v,1.6)*uH;gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.0);}`,
-  fragmentShader: `uniform float uTune,uBw;varying float vV;varying vec2 vUv;
+  fragmentShader: `uniform float uTune,uLo,uHi;varying float vV;varying vec2 vUv;
   vec3 cmap(float x){vec3 a=vec3(.024,.07,.12),b=vec3(.04,.24,.36),c=vec3(.18,.72,.66),d=vec3(.95,.82,.29),e=vec3(1.,.97,.88);
   if(x<.3)return mix(a,b,x/.3);if(x<.55)return mix(b,c,(x-.3)/.25);if(x<.8)return mix(c,d,(x-.55)/.25);return mix(d,e,(x-.8)/.2);}
-  void main(){vec3 col=cmap(smoothstep(.13,.95,vV));float d=abs(vUv.x-uTune);
-  if(d<uBw)col=mix(col,vec3(1.,.48,.35),.22);col=mix(col,vec3(1.,.55,.4),(1.-smoothstep(0.,.0015,d))*.8);
+  void main(){vec3 col=cmap(smoothstep(.13,.95,vV));float o=vUv.x-uTune,d=abs(o);
+  if(o>uLo&&o<uHi)col=mix(col,vec3(1.,.48,.35),.22);col=mix(col,vec3(1.,.55,.4),(1.-smoothstep(0.,.0015,d))*.8);
   col*=mix(1.,.45,vUv.y);gl_FragColor=vec4(col,1.);}` });
 const plane = new THREE.Mesh(new THREE.PlaneGeometry(W, D, 511, 191), mat);
 plane.rotation.x = -Math.PI / 2; scene.add(plane);
@@ -211,7 +211,7 @@ function setTune(hz, fromLive) {
   $('dial').innerHTML = fmt(st.tune) + '<small>kHz</small>';
   if (document.activeElement !== $('freq')) $('freq').value = (st.tune / 1000).toFixed(2);
   const span = st.hi - st.lo, x = (st.tune - st.lo) / span;
-  uni.uTune.value = x; uni.uBw.value = st.bw / 2 / span;
+  uni.uTune.value = x; uni.uLo.value = st.pb[0] / span; uni.uHi.value = st.pb[1] / span;
   mark.position.x = -W / 2 + W * x; mark.visible = x >= 0 && x <= 1;
   if (st.src === 'demo') labelDemo();
   else { if (!fromLive) kiwiTune(); gDirty = true; clearTimeout(listTimer); listTimer = setTimeout(renderList, 150); }
@@ -241,8 +241,10 @@ function ensureAudio() {
   offset = performance.now() / 1000 - ctx.currentTime; nextT = ctx.currentTime + .1;
 }
 function play(samples, rate) {
+  if (!samples.length) return;
   const now = ctx.currentTime;
-  if (nextT < now + .05 || nextT > now + 1.2) nextT = now + .15;
+  if (nextT > now + 1.2) return;            // already far ahead (a burst after a stall): drop instead of overlapping
+  if (nextT < now + .05) nextT = now + .15;  // fell behind: restart just ahead of now
   const buf = ctx.createBuffer(1, samples.length, rate); buf.copyToChannel(samples, 0);
   const s = ctx.createBufferSource(); s.buffer = buf; s.connect(gain); s.start(nextT); nextT += samples.length / rate;
 }
@@ -251,8 +253,8 @@ let listening = false;
 $('power').onclick = async () => {
   try { ensureAudio(); listening = !listening;
     if (listening) { await ctx.resume(); offset = performance.now() / 1000 - ctx.currentTime; } else await ctx.suspend();
-  } catch (err) { listening = false; status('Audio could not start in this browser: ' + err.message, true); }
-  $('power').textContent = listening ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', listening);
+  } catch (err) { listening = false; const msg = 'Audio could not start in this browser: ' + err.message; status(msg, true); $('what').textContent = msg; }
+  $('power').textContent = listening ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', listening); $('power').setAttribute('aria-pressed', listening);
   if (listening && st.src === 'demo') startDemoAudio(); else stopDemoAudio();
 };
 
@@ -469,7 +471,7 @@ function rebuildPoints() {
   const g = gPts.geometry; g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
   g.setAttribute('aSize', new THREE.BufferAttribute(size, 1)); g.computeBoundingSphere(); gPts.userData.list = list;
   const s = gSel.geometry;
-  if (selected) { s.setAttribute('position', new THREE.BufferAttribute(ll(selected.lat, selected.lon, 1.012).toArray(new Float32Array(3)), 3));
+  if (selected && usable(selected)) { s.setAttribute('position', new THREE.BufferAttribute(ll(selected.lat, selected.lon, 1.012).toArray(new Float32Array(3)), 3));
     s.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array([1, .97, .88]), 3)); s.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array([16]), 1)); gSel.visible = true; }
   else gSel.visible = false;
 }
@@ -492,18 +494,21 @@ function parseMsg(buf) { const o = {}; for (const kv of new TextDecoder().decode
 function kiwiTune() {
   if (!snd || snd.readyState !== 1) return; const m = $('mode').value, [lo, hi] = PB[m];
   snd.send(`SET mod=${m} low_cut=${lo} high_cut=${hi} freq=${(st.tune / 1000).toFixed(3)}`);
-  st.bw = hi - lo; const span = st.hi - st.lo, x = (st.tune - st.lo) / span; uni.uBw.value = st.bw / 2 / span;
+  st.pb = [lo, hi]; const span = st.hi - st.lo, x = (st.tune - st.lo) / span; uni.uLo.value = lo / span; uni.uHi.value = hi / span;
   if (x < .1 || x > .9) kiwiCenter(); resetIdle();
   $('what').textContent = `Live · ${m.toUpperCase()}${current ? ' · ' + current.name.slice(0, 40) : ''}`;
 }
 function kiwiCenter() {
   const span = kiwiBw / 2 ** ZOOM, cf = Math.max(span / 2, Math.min(kiwiBw - span / 2, st.tune));
   if (wf && wf.readyState === 1) wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`);
+  if (Math.abs(cf - span / 2 - st.lo) > 1) { texData.fill(0); tex.needsUpdate = true; }  // old rows belong to the old span
   setSpan(cf - span / 2, cf + span / 2, 'live');
 }
-function resetIdle() { clearTimeout(idle); idle = setTimeout(() => { kiwiClose(); status('Disconnected after 30 idle minutes to free the receiver slot.'); }, 30 * 60e3); }
+function resetIdle() { clearTimeout(idle); idle = setTimeout(() => { disconnect('Disconnected after 30 idle minutes to free the receiver slot.'); }, 30 * 60e3); }
 function kiwiClose() { for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connect').textContent = 'Connect'; $('connectHost').textContent = 'Connect'; }
+// Ends the session and cancels any connection still being set up (slot checks in flight, fallbacks).
+function disconnect(msg) { connectSeq++; kiwiClose(); current = null; if (msg) status(msg); }
 // If the receiver you picked can't take you, move to the closest free one and say so plainly.
 function tryNext(why, from) {
   const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0);
@@ -528,68 +533,78 @@ async function connectRx(rx, auto, origFrom) {
   if (listed) { status(`${fallbackNote ? fallbackNote + ' ' : ''}Checking ${rx.name}…`);
     // The slot check is advisory: if it can't get an answer, still try the receiver itself.
     try { const s = await (await fetch(`${API}/api/status?url=${encodeURIComponent(rx.origin)}`)).json();
-      if (seq !== connectSeq) return;
+      if (seq !== connectSeq || st.src !== 'live') return;
       if (!s.error && (s.offline || (s.max && s.users >= s.max))) { rx.users = s.users; gDirty = true; return tryNext(`${rx.name} is full right now.`, from); }
-    } catch {}
-    if (seq !== connectSeq) return; }
-  ensureAudio(); kiwiOpen(rx.origin, viaRelay, false, from);
+    } catch {} }
+  if (seq !== connectSeq || st.src !== 'live') return;   // cancelled, or the user went back to the demo band meanwhile
+  ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
 }
-function kiwiOpen(origin, viaRelay, tryAlt, from) {
-  kiwiClose();
-  const ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), path = s => `${tryAlt ? '' : '/kiwi'}/${ts}/${s}`;
-  const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(wsBase + path(s))}` : wsBase + path(s);
-  let opened = false, failed = false, heard = false, guard = null;
-  // force: give up even though a socket opened (the receiver never answered); noAlt: skip the older path format.
-  const fail = (force, noAlt) => { if ((opened && !force) || failed) return; failed = true; clearTimeout(guard); kiwiClose();
-    if (!tryAlt && !noAlt) return kiwiOpen(origin, viaRelay, true, from);
-    if (current) return tryNext(`Couldn't connect to ${current.name}.`, from);
-    status(viaRelay ? "The relay couldn't reach that receiver." : "Couldn't reach that receiver directly. An https page can't open a plain ws:// receiver, and this Claude preview blocks other sites entirely; open the page from the included server instead.", true); };
-  try { snd = new WebSocket(url('SND')); wf = new WebSocket(url('W/F')); } catch { return fail(); }
-  for (const w of [snd, wf]) { w.binaryType = 'arraybuffer'; w.onerror = () => { if (w === snd || w === wf) fail(); };
-    w.onopen = () => { opened = true; w.send('SET auth t=kiwi p='); };
-    w.onclose = () => { if (opened && w === snd) { kiwiClose(); status('The receiver closed the connection. Pick it again or try another.', true); } }; }
+function kiwiOpen(origin, viaRelay, from) {
+  kiwiClose(); kiwiBw = 30e6; kiwiRate = 12000;
+  const ts = Date.now(), wsBase = origin.replace(/^http/, 'ws');
+  const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(`${wsBase}/kiwi/${ts}/${s}`)}` : `${wsBase}/kiwi/${ts}/${s}`;
+  // "live" means the receiver accepted us (it sent audio_rate). Anything that ends the attempt before that is a failed
+  // connection: a refused socket, the relay closing because it couldn't reach the receiver, a busy or password reply, or silence.
+  let live = false, failed = false, busy = false, gotRow = false, guard = null, wfGuard = null;
+  const fail = why => { if (live || failed) return; failed = true; clearTimeout(guard); kiwiClose();
+    if (current) return tryNext(`${current.name} ${why}`, from);
+    status(`That receiver ${why}${!viaRelay && location.protocol === 'https:' ? ' A page served over https can only reach receivers in the directory.' : ''}`, true); };
+  try { snd = new WebSocket(url('SND')); wf = new WebSocket(url('W/F')); } catch { return fail("couldn't be reached."); }
   const S = snd, F = wf;
-  guard = setTimeout(() => { if (!heard && S === snd) fail(true, true); }, 8000);  // no reply in 8 s: move on
+  for (const w of [S, F]) { w.binaryType = 'arraybuffer'; w.onopen = () => w.send('SET auth t=kiwi p=');
+    w.onerror = () => { if (S === snd) fail("couldn't be reached."); }; }
+  S.onclose = () => { if (S !== snd) return;
+    if (!live) return fail(busy ? 'is full right now.' : "didn't accept the connection.");
+    kiwiClose(); status('The receiver closed the connection. Pick it again or try another.', true); };
+  F.onclose = () => { if (F !== wf || !live) return; wf = null; status('The receiver stopped sending its waterfall; audio continues.', true); };
+  guard = setTimeout(() => { if (S === snd) fail("didn't answer."); }, 8000);
   S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
-    if (!heard) { heard = true; clearTimeout(guard); }
     if (tag === 'MSG') { const m = parseMsg(e.data);
-      if (m.too_busy !== undefined || m.badp === '1') { const why = m.too_busy !== undefined ? 'is full right now.' : 'needs a password.'; kiwiClose();
-        return current ? tryNext(`${current.name} ${why}`, from) : status(`That receiver ${why}`, true); }
+      // too_busy=N with N > 0 means every channel is taken. too_busy=0 is sent by some receivers whose
+      // password-free channels are all in use; it may still let us in, so wait and see whether it closes.
+      if (m.too_busy !== undefined) { busy = true; if (+m.too_busy > 0) return fail('is full right now.'); }
+      if (m.badp !== undefined && m.badp !== '0') return fail(m.badp === '1' ? 'needs a password.' : 'turned the connection away.');
       if (m.bandwidth) kiwiBw = +m.bandwidth;
       if (m.sample_rate) kiwiRate = Math.round(+m.sample_rate);
-      if (m.audio_rate) { S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
+      if (m.audio_rate && !live) { live = true; clearTimeout(guard);
+        S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
         S.send('SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50'); S.send('SET squelch=0 max=0');
         S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune();
-        status(`${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`); }
-    } else if (tag === 'SND' && listening && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) { const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
+        status(`${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`);
+        wfGuard = setTimeout(() => { if (S === snd && !gotRow) status("Connected, but this receiver isn't sending a waterfall right now. Audio still works.", true); }, 8000); }
+    } else if (tag === 'SND' && listening && e.data.byteLength > 10 && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) {
+      const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
       for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; play(out, kiwiRate); } };
   F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
     if (tag === 'MSG') { const m = parseMsg(e.data);
+      if (m.bandwidth) kiwiBw = +m.bandwidth;
       if (m.wf_setup !== undefined || m.zoom_max !== undefined) { F.send('SERVER DE CLIENT lmnop-waterfall W/F'); F.send('SET maxdb=0 mindb=-100');
         F.send('SET wf_speed=4'); F.send('SET wf_comp=0'); kiwiCenter(); } }
-    else if (tag === 'W/F') { const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
+    else if (tag === 'W/F' && e.data.byteLength > 16) { if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
+      const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
       for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
       pushRow(r); } };
   keep = setInterval(() => { for (const w of [snd, wf]) if (w && w.readyState === 1) w.send('SET keepalive'); }, 5000);
   $('connect').textContent = $('connectHost').textContent = 'Disconnect'; resetIdle(); status('Connecting…');
 }
-$('connect').onclick = () => { if (snd) { kiwiClose(); current = null; connectSeq++; return status('Disconnected.'); } if (selected) connectRx(selected, false); };
+$('connect').onclick = () => { if (snd) return disconnect('Disconnected.'); if (selected) connectRx(selected, false); };
 $('connectHost').onclick = () => {
-  if (snd) { kiwiClose(); current = null; return status('Disconnected.'); }
+  if (snd) return disconnect('Disconnected.');
   const raw = $('host').value.trim(); const m = /^(?:(wss?|https?):\/\/)?([^/:\s]+)(?::(\d+))?/i.exec(raw);
   if (!m) return status('Paste a receiver address first, like host.example.com:8073', true);
   const proto = /^(wss|https)$/i.test(m[1] || '') ? 'https' : 'http', origin = `${proto}://${m[2].toLowerCase()}:${m[3] || (proto === 'https' ? 443 : 80)}`;
   const known = RX.find(r => r.origin === origin);
   if (known) { select(known, true); return connectRx(known, false); }
-  current = null; ensureAudio(); kiwiOpen(origin, false, false);
+  connectSeq++; current = null; ensureAudio(); kiwiOpen(origin, false, null);
 };
 $('mode').onchange = kiwiTune;
+let dirLoading = null;
 function setSrc(src) {
   st.src = src; $('srcDemo').setAttribute('aria-pressed', src === 'demo'); $('srcLive').setAttribute('aria-pressed', src === 'live');
   $('live').hidden = src !== 'live'; $('demoChips').hidden = src !== 'demo';
-  if (src === 'demo') { kiwiClose(); current = null; st.bw = 3000; setSpan(7000000, 7200000, '40 m band (demo)'); if (listening) startDemoAudio(); }
+  if (src === 'demo') { disconnect(); st.pb = [-650, 2200]; setSpan(7000000, 7200000, '40 m band (demo)'); if (listening) startDemoAudio(); }
   else { stopDemoAudio(); texData.fill(0); tex.needsUpdate = true; $('what').textContent = 'Live · pick a receiver below';
-    if (!gR) initGlobe(); if (dirMode === 'loading') loadDir(); }
+    if (!gR) initGlobe(); if (!dirLoading) dirLoading = loadDir(); }
 }
 $('srcDemo').onclick = () => setSrc('demo'); $('srcLive').onclick = () => setSrc('live');
 
