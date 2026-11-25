@@ -89,6 +89,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .sigs[hidden]{display:none}
 .stage.sigmode .hint,.stage.sigmode .span{display:none}
 .sighead{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-bottom:12px}
+.sigctl{display:flex;flex-wrap:wrap;gap:10px}
 .sighead b{font:600 20px "Chakra Petch",sans-serif;display:block}
 .sighead span{font-size:14px;color:var(--mute)}
 .siglist{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-width:1240px}
@@ -118,7 +119,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
   <canvas id="gl"></canvas>
   <div class="sigs" id="sigs" hidden>
     <div class="sighead"><div><b>On the air</b><span id="sigNote">Frequencies with real activity, strongest first, measured from the spectrum.</span></div>
-      <button class="btn" id="scanBtn">Scan all bands</button></div>
+      <div class="sigctl"><select id="sigBand" aria-label="Show band"><option value="">All bands</option></select><button class="btn" id="scanBtn">Scan all bands</button></div></div>
     <ol class="siglist" id="sigList"></ol>
   </div>
   <div class="hud"><div class="dial" id="dial">7 030.00<small>kHz</small></div><div class="what" id="what">CW beacon · Morse code</div></div>
@@ -483,13 +484,19 @@ const fmtK = hz => { const k = hz / 1000; return (k >= 1000 ? k.toFixed(1).repla
 function renderSignals() {
   if (!sigOn) return;
   const now = Date.now(); for (const [k, s] of found) if (now - s.seen > 15 * 60e3) found.delete(k);
-  const list = [...found.values()].sort((a, b) => b.snr - a.snr).slice(0, 80);
+  const all = [...found.values()].sort((a, b) => b.snr - a.snr), counts = new Map();
+  for (const s of all) { const k = s.band.split(' · ')[0] || 'Outside the usual bands'; counts.set(k, (counts.get(k) || 0) + 1); }
+  const sel = $('sigBand'), want = sel.value;
+  sel.innerHTML = `<option value="">All bands (${all.length})</option>` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, c]) => `<option value="${k}">${k} (${c})</option>`).join('');
+  sel.value = counts.has(want) ? want : '';
+  const list = all.filter(s => !sel.value || (s.band.split(' · ')[0] || 'Outside the usual bands') === sel.value).slice(0, 80);
   const liveReady = st.src === 'live' && snd && wf;
   $('scanBtn').disabled = !liveReady && !scan;
   $('scanBtn').textContent = scan ? 'Stop scan' : liveReady ? 'Scan all bands' : 'Scan (live receivers only)';
   $('sigNote').textContent = scan ? `Scanning ${bandsAt((det.lo + det.hi) / 2).map(b => b[2]).join(' · ') || 'between bands'} (${scan.i} of ${scan.plan.length})…`
     : st.src === 'demo' ? 'Signals found in the demo band, strongest first. Tap one to tune.'
-    : liveReady ? 'Measured from this receiver’s spectrum, strongest first. Tap one to tune; Scan all bands looks beyond the current slice.'
+    : liveReady ? 'Measured from this receiver’s spectrum, strongest first. Tap one to tune and listen; Scan all bands looks beyond the current slice.'
+    : st.src === 'live' && snd ? 'This receiver stopped sending its waterfall, so new signals can’t be measured. Pick another receiver to scan.'
     : 'Connect to a receiver to see what’s on the air.';
   const ago = s => { const t = (now - s.seen) / 1000; return t < 6 ? 'now' : t < 60 ? `${Math.round(t)} s ago` : `${Math.round(t / 60)} min ago`; };
   $('sigList').innerHTML = list.length ? list.map(s => `<li><button data-k="${s.key}" class="${Math.abs(st.tune - s.tune) < 400 ? 'on' : ''}">
@@ -502,11 +509,12 @@ function renderSignals() {
 $('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) return; const s = found.get(+b.dataset.k); if (!s) return;
   if (scan) endScan();
   if (st.src === 'live') { if (!snd) return status('Connect to a receiver first.', true); $('mode').value = s.mode; }
-  setTune(s.tune); renderSignals(); };
+  setTune(s.tune); if (!listening) $('power').click(); renderSignals(); };
 function setView(sig) {
   sigOn = sig; $('viewWf').setAttribute('aria-pressed', !sig); $('viewSig').setAttribute('aria-pressed', sig);
   $('sigs').hidden = !sig; $('stage').classList.toggle('sigmode', sig); if (sig) { detFinalize(); renderSignals(); }
 }
+$('sigBand').onchange = renderSignals;
 $('viewWf').onclick = () => setView(false); $('viewSig').onclick = () => setView(true);
 setInterval(() => { if (sigOn || scan) { if (!scan) detFinalize(); renderSignals(); } }, 2000);
 // Band scan (live only): step the waterfall across every broadcast and ham band; audio stays where it is.
