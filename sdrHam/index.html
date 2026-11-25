@@ -400,7 +400,7 @@ const bandsAt = f => BANDS.filter(b => f >= b[0] && f <= b[1]);
 const det = { rows: [], lo: 0, hi: 0, skip: 0 }, found = new Map();
 let sigOn = false, scan = null, sigKey = 0;
 function detAdd(row) {
-  if (det.lo !== st.lo || det.hi !== st.hi) { if (sigOn || scan) detFinalize(); det.rows = []; det.lo = st.lo; det.hi = st.hi; det.skip = st.src === 'live' ? 4 : 0; }
+  if (det.lo !== st.lo || det.hi !== st.hi) { if (sigOn || scan) detFinalize(); det.rows = []; det.lo = st.lo; det.hi = st.hi; det.skip = st.src === 'live' && !wfTrust ? 4 : 0; }
   if (det.skip > 0) { det.skip--; return; }      // rows still in flight from the previous span
   det.rows.push(row.slice()); if (det.rows.length > 120) det.rows.shift();
 }
@@ -434,6 +434,8 @@ function detFinalize() {
   const now = Date.now(), demo = st.src === 'demo';
   const put = (c, f, width, top, group) => {
     const snr = Math.round(top / 3), band = bandsAt(f).map(x => x[2]).join(' · ');
+    // Broadcasters and time signals sit on fixed channels 5 kHz apart: match them by channel, not by width.
+    if (!group && (c.type === 'Time signal' || (c.type === 'Broadcast station' && f > 2.3e6))) group = 'ch:' + c.tune;
     let hit = null; for (const s of found.values()) if (group ? s.group === group : !s.group && Math.abs(s.f - f) < Math.max(700, width / 2, s.width / 2)) { hit = s; break; }
     if (hit && hit.seen === now) { hit.snr = Math.max(hit.snr, snr); return; }      // already reported in this pass
     const rec = { key: hit ? hit.key : ++sigKey, f, width, snr, band, group, seen: now, demo, ...c };
@@ -464,7 +466,7 @@ function detFinalize() {
         let top = 0; for (let i = cl(binOf(g - 1200)); i <= cl(binOf(g + 1200)); i++) if (i >= b && i <= e) top = Math.max(top, p90[i] - floor);
         if (top < PEAK) continue;
         let w = 0; for (let i = cl(binOf(g - 5000)); i <= cl(binOf(g + 5000)); i++) if (m[i]) w++;
-        put({ type: 'Broadcast station', mode: 'am', tune: g }, g, w * binHz, top); any = true; }
+        put({ type: TIME.includes(g) ? 'Time signal' : 'Broadcast station', mode: 'am', tune: g }, g, w * binHz, top); any = true; }
       if (any) { b = e + 1; continue; }
     }
     for (const [s0, e0] of split(b, e, [])) {
@@ -481,14 +483,17 @@ function detFinalize() {
   }
 }
 const fmtK = hz => { const k = hz / 1000; return (k >= 1000 ? k.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/, ' ') : k.toFixed(1)); };
-function renderSignals() {
-  if (!sigOn) return;
+let sigPress = false, sigHtml = '', bandHtml = '';
+$('sigList').addEventListener('pointerdown', () => { sigPress = true; });
+for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => setTimeout(() => { sigPress = false; }, 50));
+function renderSignals(force) {
+  if (!sigOn || (sigPress && !force)) return;   // don't swap the list out from under a finger
   const now = Date.now(); for (const [k, s] of found) if (now - s.seen > 15 * 60e3) found.delete(k);
   const all = [...found.values()].sort((a, b) => b.snr - a.snr), counts = new Map();
   for (const s of all) { const k = s.band.split(' · ')[0] || 'Outside the usual bands'; counts.set(k, (counts.get(k) || 0) + 1); }
   const sel = $('sigBand'), want = sel.value;
-  sel.innerHTML = `<option value="">All bands (${all.length})</option>` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, c]) => `<option value="${k}">${k} (${c})</option>`).join('');
-  sel.value = counts.has(want) ? want : '';
+  const opts = `<option value="">All bands (${all.length})</option>` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, c]) => `<option value="${k}">${k} (${c})</option>`).join('');
+  if (opts !== bandHtml && document.activeElement !== sel) { bandHtml = opts; sel.innerHTML = opts; sel.value = counts.has(want) ? want : ''; }  // never while it's open
   const list = all.filter(s => !sel.value || (s.band.split(' · ')[0] || 'Outside the usual bands') === sel.value).slice(0, 80);
   const liveReady = st.src === 'live' && snd && wf;
   $('scanBtn').disabled = !liveReady && !scan;
@@ -498,23 +503,27 @@ function renderSignals() {
     : liveReady ? 'Measured from this receiver’s spectrum, strongest first. Tap one to tune and listen; Scan all bands looks beyond the current slice.'
     : st.src === 'live' && snd ? 'This receiver stopped sending its waterfall, so new signals can’t be measured. Pick another receiver to scan.'
     : 'Connect to a receiver to see what’s on the air.';
-  const ago = s => { const t = (now - s.seen) / 1000; return t < 6 ? 'now' : t < 60 ? `${Math.round(t)} s ago` : `${Math.round(t / 60)} min ago`; };
-  $('sigList').innerHTML = list.length ? list.map(s => `<li><button data-k="${s.key}" class="${Math.abs(st.tune - s.tune) < 400 ? 'on' : ''}">
+  const ago = s => { const t = (now - s.seen) / 1000; return t < 10 ? 'now' : t < 60 ? 'under a minute ago' : `${Math.round(t / 60)} min ago`; };
+  const html = list.length ? list.map(s => `<li><button data-k="${s.key}" class="${Math.abs(st.tune - s.tune) < 400 ? 'on' : ''}">
       <span class="sf">${fmtK(s.tune)}<small>kHz</small></span>
       <span class="st"><b>${s.type}${s.demo ? '' : ' · ' + s.mode.toUpperCase()}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
       <span class="mt" title="${s.snr} dB above the noise"><i style="width:${Math.min(100, s.snr * 2.5)}%"></i></span>
       <span class="ag">${s.snr} dB · ${ago(s)}</span></button></li>`).join('')
     : `<li class="empty">${st.src === 'live' && !liveReady ? 'Nothing yet. Connect to a receiver first.' : 'Listening for signals… nothing stands above the noise yet.'}</li>`;
+  if (html === sigHtml) return;
+  const fk = document.activeElement && document.activeElement.closest && document.activeElement.closest('#sigList button') ? document.activeElement.dataset.k : null;
+  sigHtml = html; $('sigList').innerHTML = html;
+  if (fk) { const b = $('sigList').querySelector(`[data-k="${fk}"]`); if (b) b.focus(); }   // keep keyboard focus on the same signal
 }
 $('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) return; const s = found.get(+b.dataset.k); if (!s) return;
   if (scan) endScan();
   if (st.src === 'live') { if (!snd) return status('Connect to a receiver first.', true); $('mode').value = s.mode; }
-  setTune(s.tune); if (!listening) $('power').click(); renderSignals(); };
+  setTune(s.tune); if (!listening) $('power').click(); renderSignals(true); };
 function setView(sig) {
   sigOn = sig; $('viewWf').setAttribute('aria-pressed', !sig); $('viewSig').setAttribute('aria-pressed', sig);
-  $('sigs').hidden = !sig; $('stage').classList.toggle('sigmode', sig); if (sig) { detFinalize(); renderSignals(); }
+  $('sigs').hidden = !sig; $('stage').classList.toggle('sigmode', sig); if (sig) { detFinalize(); renderSignals(true); }
 }
-$('sigBand').onchange = renderSignals;
+$('sigBand').onchange = () => renderSignals(true);
 $('viewWf').onclick = () => setView(false); $('viewSig').onclick = () => setView(true);
 setInterval(() => { if (sigOn || scan) { if (!scan) detFinalize(); renderSignals(); } }, 2000);
 // Band scan (live only): step the waterfall across every broadcast and ham band; audio stays where it is.
@@ -530,14 +539,18 @@ function scanPlan() {
   return cfs.sort((a, b) => a - b);
 }
 function wfGoto(cf) { const span = kiwiBw / 2 ** ZOOM;
-  wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); texData.fill(0); tex.needsUpdate = true; setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
+  wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); texData.fill(0); tex.needsUpdate = true; setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
 function endScan() { if (!scan) return; clearTimeout(scan.timer); scan = null; if (wf && wf.readyState === 1) kiwiCenter(); renderSignals(); }
 $('scanBtn').onclick = () => {
   if (scan) return endScan();
   if (st.src !== 'live' || !wf || wf.readyState !== 1) return;
   scan = { plan: scanPlan(), i: 0, timer: null };
   const step = () => { if (!scan) return; if (scan.i >= scan.plan.length || !wf || wf.readyState !== 1) return endScan();
-    wfGoto(scan.plan[scan.i++]); renderSignals(); scan.timer = setTimeout(() => { detFinalize(); step(); }, 1500); };
+    wfGoto(scan.plan[scan.i++]); renderSignals(true); const t0 = performance.now();
+    // Stay until 12 rows of this slice have arrived (receivers send between a few and ~25 a second), at most 6 s.
+    const wait = () => { if (!scan) return; if ((det.lo === st.lo && det.rows.length >= 12) || performance.now() - t0 > 6000) { detFinalize(); step(); }
+      else scan.timer = setTimeout(wait, 250); };
+    scan.timer = setTimeout(wait, 400); };
   step();
 };
 
@@ -591,16 +604,21 @@ function ranked() {
   return list;
 }
 let listTimer = null;
-function renderList() {
+let rxHtml = '', rxPress = false;
+$('rxList').addEventListener('pointerdown', () => { rxPress = true; });
+for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => setTimeout(() => { rxPress = false; }, 50));
+function renderList(force) {
+  if (rxPress && !force) return;   // don't swap the list out from under a finger
   const list = ranked().slice(0, 12), near = $('sort').value === 'near';
-  $('rxList').innerHTML = list.length ? list.map((r, i) => `<li><button data-i="${i}" class="${r === selected ? 'sel' : ''}">
+  const html = list.length ? list.map((r, i) => `<li><button data-i="${i}" class="${r === selected ? 'sel' : ''}">
     <span class="nm">${esc(r.name)}</span><span class="lc">${esc(r.loc || r.antenna || r.id)}</span>
     <span class="sl"><b>${free(r)}/${r.max}</b> free<br>${near ? (isFinite(r._km) ? Math.round(r._km).toLocaleString() + ' km' : 'no GPS') : r.snr != null ? 'SNR ' + r.snr + ' dB' : ''}</span></button></li>`).join('')
     : `<li class="empty">${RX.length ? 'No receivers match. Untick "Free slots only" or tune elsewhere.' : 'Loading…'}</li>`;
   $('rxList').onclick = e => { const b = e.target.closest('button'); if (b) select(list[+b.dataset.i], true); };
+  if (html !== rxHtml) { rxHtml = html; $('rxList').innerHTML = html; }   // only touch the list when it actually changed
 }
 function select(r, fly) {
-  selected = r; gDirty = true; renderList(); if (!r) { $('rxCard').hidden = true; return; }
+  selected = r; gDirty = true; renderList(true); if (!r) { $('rxCard').hidden = true; return; }
   $('rxCard').hidden = false; $('rxName').textContent = r.name;
   $('rxMeta').textContent = [r.loc, `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
     `${(r.lo / 1e6).toFixed(1)}–${(r.hi / 1e6).toFixed(1)} MHz`].filter(Boolean).join(' · ');
@@ -685,6 +703,8 @@ function renderGlobe() {
 
 /* ---------- live KiwiSDR connection ---------- */
 let snd = null, wf = null, keep = null, idle = null, kiwiBw = 30e6, kiwiRate = 12000;
+// Each waterfall row says where it starts (in units of bandwidth / (fft size × 2^zoom_max)) and at what zoom.
+let wfFft = 1024, wfZmax = 14, wfAskedAt = 0, wfTrust = true;
 const ZOOM = 7;
 const PB = { am: [-4900, 4900], usb: [300, 2700], lsb: [-2700, -300], cw: [300, 700] };
 function status(msg, err) { $('status').textContent = msg; $('status').classList.toggle('err', !!err); }
@@ -699,7 +719,7 @@ function kiwiTune() {
 }
 function kiwiCenter() {
   const span = kiwiBw / 2 ** ZOOM, cf = Math.max(span / 2, Math.min(kiwiBw - span / 2, st.tune));
-  if (wf && wf.readyState === 1) wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`);
+  if (wf && wf.readyState === 1) { wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); }
   if (Math.abs(cf - span / 2 - st.lo) > 1) { texData.fill(0); tex.needsUpdate = true; }  // old rows belong to the old span
   setSpan(cf - span / 2, cf + span / 2, 'live');
 }
@@ -740,7 +760,7 @@ async function connectRx(rx, auto, origFrom) {
   ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
 }
 function kiwiOpen(origin, viaRelay, from) {
-  kiwiClose(); kiwiBw = 30e6; kiwiRate = 12000; found.clear();   // a new receiver hears a different band
+  kiwiClose(); kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true; found.clear();   // a new receiver hears a different band
   const ts = Date.now(), wsBase = origin.replace(/^http/, 'ws');
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(`${wsBase}/kiwi/${ts}/${s}`)}` : `${wsBase}/kiwi/${ts}/${s}`;
   // "live" means the receiver accepted us (it sent audio_rate). Anything that ends the attempt before that is a failed
@@ -778,9 +798,17 @@ function kiwiOpen(origin, viaRelay, from) {
   F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; const tag = new TextDecoder().decode(e.data.slice(0, 3));
     if (tag === 'MSG') { const m = parseMsg(e.data);
       if (m.bandwidth) kiwiBw = +m.bandwidth;
+      if (+m.wf_fft_size > 0) wfFft = +m.wf_fft_size;
+      if (+m.zoom_max > 0) wfZmax = +m.zoom_max;
       if (m.wf_setup !== undefined || m.zoom_max !== undefined) { F.send('SERVER DE CLIENT lmnop-waterfall W/F'); F.send('SET maxdb=0 mindb=-100');
         F.send('SET wf_speed=4'); F.send('SET wf_comp=0'); kiwiCenter(); } }
-    else if (tag === 'W/F' && e.data.byteLength > 16) { if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
+    else if (tag === 'W/F' && e.data.byteLength > 16) {
+      if (wfTrust) {   // skip rows from before the last re-centre or scan step, which would land at the wrong frequencies
+        const dv = new DataView(e.data), startHz = dv.getUint32(4, true) * kiwiBw / (wfFft * 2 ** wfZmax), zm = dv.getUint32(8, true) & 0xffff;
+        if (zm !== ZOOM || Math.abs(startHz - st.lo) > (st.hi - st.lo) / BINS * 1.5) {
+          // If rows never line up with what we asked for, this receiver reports positions differently: stop checking.
+          if (wfAskedAt && performance.now() - wfAskedAt > 3000) wfTrust = false; else return; } }
+      if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
       const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
       for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
       pushRow(r); } };
