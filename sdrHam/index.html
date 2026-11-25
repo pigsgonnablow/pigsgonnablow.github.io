@@ -403,16 +403,21 @@ function detAdd(row) {
   if (det.skip > 0) { det.skip--; return; }      // rows still in flight from the previous span
   det.rows.push(row.slice()); if (det.rows.length > 120) det.rows.shift();
 }
+const CWSEG = [[1800e3, 1840e3], [3500e3, 3570e3], [7000e3, 7040e3], [10100e3, 10150e3], [14000e3, 14070e3],
+  [18068e3, 18095e3], [21000e3, 21070e3], [24890e3, 24915e3], [28000e3, 28070e3]];   // Morse ends of the ham bands
+const ssbMode = f => f >= 10e6 || (f > 5.3e6 && f < 5.41e6) ? 'usb' : 'lsb';           // ham convention
 function classify(f, width, steady, loHz, hiHz, carrier) {
-  const k = f / 1000, ft8 = FT8.find(d => k > d - .1 && k < d + 3.2);
-  if (ft8) return { type: 'FT8 digital', mode: 'usb', tune: ft8 * 1000 };
   const ts = TIME.find(t => Math.abs(f - t) < 2500);
   if (ts && width >= 600) return { type: 'Time signal', mode: 'am', tune: ts };
   const bc = bandsAt(f).some(b => b[3] === 'bc') || f < 1.7e6;   // nothing but AM broadcasting below 1.7 MHz
+  if (f < 1.7e6) return { type: 'Broadcast station', mode: 'am', tune: Math.round(f / 1000) * 1000 };
+  if (CWSEG.some(([a, z]) => f >= a && f <= z) && !(width >= 4000 && carrier))
+    return { type: width > 1500 ? 'Morse (several stations)' : steady ? 'Carrier or beacon' : 'Morse or data', mode: 'cw', tune: Math.round((f - 500) / 10) * 10 };
   // AM has a steady carrier in the middle of its sidebands; SSB voice has no carrier and comes and goes.
-  if (width >= 4000 || (width >= 2000 && steady && carrier) || (bc && width >= 1200 && steady))
+  if ((width >= 4000 && carrier) || (width >= 2000 && steady && carrier) || (bc && width >= 1200 && steady))
     return { type: bc ? 'Broadcast station' : 'AM signal', mode: 'am', tune: bc && f > 2.3e6 ? Math.round(f / 5000) * 5000 : Math.round(f / 1000) * 1000 };
-  if (width >= 1200) { const usb = f >= 10e6 || (f > 5.3e6 && f < 5.41e6);
+  if (width >= 4000) return { type: 'Several voices', mode: ssbMode(f), tune: Math.round(f / 100) * 100 };
+  if (width >= 1200) { const usb = ssbMode(f) === 'usb';
     return { type: 'Voice (SSB)', mode: usb ? 'usb' : 'lsb', tune: Math.round((usb ? loHz - 250 : hiHz + 250) / 100) * 100 }; }
   return { type: steady ? 'Carrier or beacon' : 'Morse or data', mode: 'cw', tune: Math.round((f - 500) / 10) * 10 };
 }
@@ -420,28 +425,56 @@ function detFinalize() {
   const R = det.rows, n = R.length; if (n < 8 || det.hi <= det.lo) return;
   const p90 = new Float32Array(BINS), p50 = new Float32Array(BINS), col = new Uint8Array(n);
   for (let b = 0; b < BINS; b++) { for (let i = 0; i < n; i++) col[i] = R[i][b]; col.sort(); p50[b] = col[n >> 1]; p90[b] = col[Math.floor(n * .9)]; }
-  const floor = Float32Array.from(p50).sort()[BINS >> 1], binHz = (det.hi - det.lo) / BINS, ON = floor + 18, PEAK = floor + 24;  // 3 units ≈ 1 dB
+  // Waterfall units: 3 ≈ 1 dB. A bin is "on" 6 dB above the noise; a signal needs a peak 10 dB above it to be listed.
+  const floor = Float32Array.from(p50).sort()[BINS >> 1], binHz = (det.hi - det.lo) / BINS, ON = floor + 18, PEAK = 30;
+  const fOf = i => det.lo + (i + .5) * binHz, binOf = f => Math.floor((f - det.lo) / binHz), cl = i => Math.max(0, Math.min(BINS - 1, i));
   const m = new Uint8Array(BINS); for (let b = 0; b < BINS; b++) m[b] = p90[b] >= ON;
   for (let b = 1; b < BINS - 1; b++) if (!m[b] && m[b - 1] && m[b + 1]) m[b] = 1;   // bridge one-bin gaps
-  const now = Date.now();
+  const now = Date.now(), demo = st.src === 'demo';
+  const put = (c, f, width, top, group) => {
+    const snr = Math.round(top / 3), band = bandsAt(f).map(x => x[2]).join(' · ');
+    let hit = null; for (const s of found.values()) if (group ? s.group === group : !s.group && Math.abs(s.f - f) < Math.max(700, width / 2, s.width / 2)) { hit = s; break; }
+    if (hit && hit.seen === now) { hit.snr = Math.max(hit.snr, snr); return; }      // already reported in this pass
+    const rec = { key: hit ? hit.key : ++sigKey, f, width, snr, band, group, seen: now, demo, ...c };
+    if (demo) rec.tune = group ? c.tune + 900 : Math.round(f / 10) * 10;            // the demo band has no modes: centre on it
+    found.set(rec.key, rec);
+  };
+  // 1. FT8: every station on a dial frequency shares one entry; then leave those bins out.
+  for (const d of FT8) { const a = binOf(d * 1000 + 150), z = binOf(d * 1000 + 3100); if (z < 0 || a >= BINS) continue;
+    let top = 0, cnt = 0; for (let i = cl(a); i <= cl(z); i++) { if (m[i]) { cnt++; top = Math.max(top, p90[i] - floor); } m[i] = 0; }
+    if (cnt >= 2 && top >= PEAK) put({ type: 'FT8 digital', mode: 'usb', tune: d * 1000 }, d * 1000 + 1500, 3000, top, 'ft8:' + d); }
+  // Split a busy stretch at its deepest dip (5 dB or more), recursively, so neighbouring stations come apart.
+  const split = (b, e, out) => {
+    if (e - b >= 2) { let best = -1, depth = 0;
+      const L = new Float32Array(e - b + 1), Rm = new Float32Array(e - b + 1);
+      for (let i = b, mx = 0; i <= e; i++) L[i - b] = mx = Math.max(mx, p90[i]);
+      for (let i = e, mx = 0; i >= b; i--) Rm[i - b] = mx = Math.max(mx, p90[i]);
+      for (let v = b + 1; v < e; v++) { const dd = Math.min(L[v - 1 - b], Rm[v + 1 - b]) - p90[v]; if (dd > depth) { depth = dd; best = v; } }
+      if (depth >= 15) { split(b, best - 1, out); split(best + 1, e, out); return out; } }
+    out.push([b, e]); return out; };
   for (let b = 0; b < BINS;) {
     if (!m[b]) { b++; continue; }
     let e = b; while (e + 1 < BINS && m[e + 1]) e++;
-    let top = 0, wsum = 0, fsum = 0, occ = 0, pk = b;
-    for (let i = b; i <= e; i++) { const w = Math.max(0, p90[i] - floor); if (w > top) { top = w; pk = i; } wsum += w; fsum += w * (det.lo + (i + .5) * binHz); }
-    const loHz = det.lo + b * binHz, hiHz = det.lo + (e + 1) * binHz, width = hiHz - loHz;
-    if (top >= PEAK - floor && width <= 20000) {
-      for (const r of R) { let mx = 0; for (let i = b; i <= e; i++) if (r[i] > mx) mx = r[i]; if (mx >= ON) occ++; }
-      const at = (pk - b + .5) / (e - b + 1), carrier = at > .3 && at < .7 && top - wsum / (e - b + 1) > 12 && p50[pk] >= ON;  // strong, steady middle peak
-      const f = fsum / wsum, c = classify(f, width, occ / n > .85, loHz, hiHz, carrier), snr = Math.round(top / 3);
-      const band = bandsAt(f).map(x => x[2]).join(' · ');
-      const group = c.type === 'FT8 digital' ? 'ft8:' + c.tune : null;   // all FT8 stations on one dial frequency share an entry
-      let hit = null; for (const s of found.values()) if (group ? s.group === group : !s.group && Math.abs(s.f - f) < Math.max(700, width / 2, s.width / 2)) { hit = s; break; }
-      if (hit && group && hit.seen === now) { hit.snr = Math.max(hit.snr, snr); b = e + 1; continue; }
-      const rec = { key: hit ? hit.key : ++sigKey, f, width, snr, band, group, seen: now, demo: st.src === 'demo', ...c };
-      if (group) { rec.f = c.tune + 1500; rec.width = 3000; }
-      if (rec.demo) rec.tune = group ? c.tune + 900 : Math.round(f / 10) * 10;   // demo has no modes: centre on the signal   // the demo band has no modes: just centre on it
-      found.set(rec.key, rec);
+    const fc = fOf((b + e) / 2), loHz = det.lo + b * binHz, hiHz = det.lo + (e + 1) * binHz;
+    const grid = fc > 2.3e6 && bandsAt(fc).some(x => x[3] === 'bc') && hiHz - loHz >= 1500;
+    if (grid) {   // shortwave broadcasters sit on a 5 kHz grid: report each channel with a clear peak at its centre
+      let any = false;
+      for (let g = Math.ceil(loHz / 5000) * 5000; g <= hiHz; g += 5000) {
+        let top = 0; for (let i = cl(binOf(g - 1200)); i <= cl(binOf(g + 1200)); i++) if (i >= b && i <= e) top = Math.max(top, p90[i] - floor);
+        if (top < PEAK) continue;
+        let w = 0; for (let i = cl(binOf(g - 5000)); i <= cl(binOf(g + 5000)); i++) if (m[i]) w++;
+        put({ type: 'Broadcast station', mode: 'am', tune: g }, g, w * binHz, top); any = true; }
+      if (any) { b = e + 1; continue; }
+    }
+    for (const [s0, e0] of split(b, e, [])) {
+      let top = 0, wsum = 0, fsum = 0, occ = 0, pk = s0;
+      for (let i = s0; i <= e0; i++) { const w = Math.max(0, p90[i] - floor); if (w > top) { top = w; pk = i; } wsum += w; fsum += w * fOf(i); }
+      const lo2 = det.lo + s0 * binHz, hi2 = det.lo + (e0 + 1) * binHz, width = hi2 - lo2;
+      if (top < PEAK || width > 20000 || !wsum) continue;
+      for (const r of R) { let mx = 0; for (let i = s0; i <= e0; i++) if (r[i] > mx) mx = r[i]; if (mx >= ON) occ++; }
+      const at = (pk - s0 + .5) / (e0 - s0 + 1), carrier = at > .3 && at < .7 && top - wsum / (e0 - s0 + 1) > 12 && p50[pk] >= ON;  // strong, steady middle peak
+      const f = fsum / wsum;
+      put(classify(f, width, occ / n > .85, lo2, hi2, carrier), f, width, top);
     }
     b = e + 1;
   }
