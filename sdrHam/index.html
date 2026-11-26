@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.2.0" data-date="2026-11-26">
+<meta name="app-version" content="1.2.1" data-date="2026-11-26">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -450,6 +450,9 @@ function classify(f, width, steady, loHz, hiHz, carrier) {
   // AM has a steady carrier in the middle of its sidebands; SSB voice has no carrier and comes and goes.
   if ((width >= 4000 && carrier) || (width >= 2000 && steady && carrier) || (bc && width >= 1200 && steady))
     return { type: bc ? 'Broadcast station' : 'AM signal', mode: 'am', tune: bc && f > 2.3e6 ? Math.round(f / 5000) * 5000 : Math.round(f / 1000) * 1000 };
+  // Voice comes and goes (pauses, people taking turns); data modes (digital voice, SSTV, RTTY, …) stay on solidly.
+  // Judged only over 40+ rows: a quick look can catch someone mid-sentence.
+  if (width >= 1200 && width < 4000 && steady && det.rows.length >= 40) return { type: 'Data or digital', mode: ssbMode(f), tune: snapDial(ssbMode(f) === 'usb' ? loHz - 250 : hiHz + 250) };
   if (width >= 4000) return { type: 'Several voices', mode: ssbMode(f), tune: snapDial(ssbMode(f) === 'usb' ? loHz - 250 : hiHz + 250) };
   if (width >= 1200) { const usb = ssbMode(f) === 'usb';
     return { type: 'Voice (SSB)', mode: usb ? 'usb' : 'lsb', tune: snapDial(usb ? loHz - 250 : hiHz + 250) }; }
@@ -474,7 +477,7 @@ function detFinalize() {
       || (voice && /Voice|voices/.test(s.type) && Math.abs(s.tune - c.tune) < 1500))) { hit = s; break; }   // one station, measured twice
     if (hit && hit.seen === now) { hit.snr = Math.max(hit.snr, snr); return; }      // already reported in this pass
     found.set(hit ? hit.key : ++sigKey, { key: hit ? hit.key : sigKey, f, width, snr, band, group, seen: now, ...c,
-      ...(hit && { heardAt: hit.heardAt, quietAt: hit.quietAt }) });   // keep what Find a voice learnt about it
+      ...(hit && { heardAt: hit.heardAt, quietAt: hit.quietAt, notVoice: hit.notVoice }) });   // keep what Find a voice learnt about it
   };
   // 1. FT8: every station on a dial frequency shares one entry; then leave those bins out.
   for (const d of FT8) { const a = binOf(d * 1000 + 150), z = binOf(d * 1000 + 3100); if (z < 0 || a >= BINS) continue;
@@ -523,7 +526,13 @@ function detFinalize() {
           const a = usb ? lo2 + k * SLOT : hi2 - (k + 1) * SLOT, z = a + SLOT; let t = 0;
           for (let i = cl(binOf(a)); i <= cl(binOf(z)); i++) if (i >= s0 && i <= e0) t = Math.max(t, p90[i] - floor);
           if (t < PEAK) continue;
-          put({ type: 'Voice (SSB)', mode: c.mode, tune: snapDial(usb ? a - 250 : z + 250) }, (a + z) / 2, SLOT, t); made++; }
+          // on-time per slot: a merged block of people taking turns is "always on", each of them is not
+          // (middle 70% of the slot only, so a neighbour's edge isn't counted as this one talking)
+          // (average level, not the loudest column: background speckle would otherwise count as talking)
+          let on = 0; const ia = Math.max(s0, cl(binOf(a + .15 * SLOT))), iz = Math.min(e0, cl(binOf(z - .15 * SLOT)));
+          if (iz >= ia) for (const r of R) { let sum = 0; for (let i = ia; i <= iz; i++) sum += r[i]; if (sum / (iz - ia + 1) >= ON) on++; }
+          const data = on / n > .85 && n >= 40;
+          put({ type: data ? 'Data or digital' : 'Voice (SSB)', mode: c.mode, tune: snapDial(usb ? a - 250 : z + 250) }, (a + z) / 2, SLOT, t); made++; }
         if (made) continue;
       }
       put(c, f, width, top);
@@ -535,8 +544,8 @@ const fmtK = hz => { const k = hz / 1000; return (k >= 1000 ? k.toFixed(1).repla
 // Kinds of signal the list can show. Tapping a kind while all are shown shows only that kind; further taps add or
 // remove kinds; "All" shows everything again. Remembered between visits.
 const KINDS = [['voice', 'Voice', t => /Voice|voices/.test(t)], ['bc', 'Broadcast & AM', t => /Broadcast|AM signal/.test(t)],
-  ['morse', 'Morse', t => /Morse/.test(t)], ['ft8', 'FT8', t => /FT8/.test(t)], ['beacon', 'Beacons', t => /Carrier/.test(t)], ['time', 'Time signals', t => /Time/.test(t)]];
-const kindOf = s => (KINDS.find(k => k[2](s.type)) || KINDS[0])[0];
+  ['morse', 'Morse', t => /Morse/.test(t)], ['data', 'Data', t => /Data or digital/.test(t)], ['ft8', 'FT8', t => /FT8/.test(t)], ['beacon', 'Beacons', t => /Carrier/.test(t)], ['time', 'Time signals', t => /Time/.test(t)]];
+const kindOf = s => s.notVoice ? 'data' : (KINDS.find(k => k[2](s.type)) || KINDS[0])[0];   // Find a voice heard a steady signal
 let showKinds = new Set(KINDS.map(k => k[0]));
 try { const saved = JSON.parse(localStorage.getItem('wr.sigKinds') || 'null');
   if (Array.isArray(saved) && saved.length) showKinds = new Set(saved.filter(k => KINDS.some(K => K[0] === k)));
@@ -586,7 +595,7 @@ function renderSignals(force) {
   const ago = s => { const t = (now - s.seen) / 1000; return t < 10 ? 'now' : t < 60 ? '<1 min ago' : `${Math.round(t / 60)} min ago`; };
   const html = list.length ? list.map(s => `<li><button data-k="${s.key}" class="${Math.abs(st.tune - s.tune) < 400 ? 'on' : ''}">
       <span class="sf">${fmtK(s.tune)}<small>kHz</small></span>
-      <span class="st"><b>${s.type} · ${s.mode.toUpperCase()}${s.heardAt && now - s.heardAt < 600e3 ? ' <em class="heard">voice heard</em>' : s.quietAt && now - s.quietAt < 600e3 ? ' <em class="quiet">quiet just now</em>' : ''}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
+      <span class="st"><b>${s.type} · ${s.mode.toUpperCase()}${s.heardAt && now - s.heardAt < 600e3 ? ' <em class="heard">voice heard</em>' : s.quietAt && now - s.quietAt < 600e3 ? ' <em class="quiet">quiet just now</em>' : ''}${s.notVoice ? ' <em class="quiet">steady signal, not speech</em>' : ''}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
       <span class="mt" title="${s.snr} dB above the noise"><i style="width:${Math.min(100, s.snr * 2.5)}%"></i></span>
       <span class="ag">${s.snr} dB · ${ago(s)}</span></button></li>`).join('')
     : `<li class="empty">${!liveReady && !found.size ? 'Nothing yet. Connect to a receiver first.'
@@ -637,6 +646,7 @@ async function findVoice() {
     const cur = found.get(s.key) || s;                                // the entry may have been re-measured meanwhile
     if (r && r.voice) { cur.heardAt = Date.now(); delete cur.quietAt; stopHunt(`Someone's talking on ${fmtK(s.tune)} kHz ${s.mode.toUpperCase()}. Tuned in; use ±.1 to fine-tune if it sounds high or low.`); return; }
     cur.quietAt = Date.now();
+    if (r && r.range < 3 && r.syllabic < .2) cur.notVoice = Date.now();   // perfectly steady: a data signal, not a pause in a conversation
   }
   stopHunt(`Listened to ${cands.length} voice signal${cands.length > 1 ? 's' : ''}: nobody talking right now. Conversations come and go, so scan again in a minute and retry.`);
 }
