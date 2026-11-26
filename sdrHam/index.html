@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.2.1" data-date="2026-11-26">
+<meta name="app-version" content="1.2.2" data-date="2026-11-26">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -409,6 +409,7 @@ const ssbMode = f => f >= 10e6 || (f > 5.3e6 && f < 5.41e6) ? 'usb' : 'lsb';    
 // Speech has a syllable rhythm: its loudness swings by several dB a few times a second (2–8 Hz), and it spreads over
 // many pitches. Band noise is steady; Morse and carriers sit on a single pitch. Measured on real 20 m signals: a
 // talker scored 0.62 for rhythm with 17 dB swings, empty frequencies 0.12–0.18 with 3 dB, a carrier spanned 120 Hz.
+// Voiced speech also has a pitch that keeps moving, which noise (no pitch) and tones or Morse (fixed pitch) lack.
 let probe = null;
 function fft(re, im) { const n = re.length;
   for (let i = 1, j = 0; i < n; i++) { let b = n >> 1; for (; j & b; b >>= 1) j ^= b; j ^= b; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
@@ -432,8 +433,21 @@ function speechScore(chunks, rate) {
     for (let j = 0; j < N; j++) re[j] = x[i + j] * (.5 - .5 * Math.cos(2 * Math.PI * j / N)); fft(re, im);
     for (let k = 2; k < N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k]; }
   const pt = P.reduce((a, b) => a + b, 0), at = q => { let c = 0; for (let k = 0; k < P.length; k++) { c += P[k]; if (c >= pt * q) return k * rate / N; } return 0; };
-  const r = { syllabic: syl / tot, range, spread: at(.9) - at(.1) };
-  r.voice = r.syllabic >= .35 && r.range >= 6 && r.spread >= 700;
+  // voicing: does the louder audio have a vocal pitch (66–300 Hz), and does that pitch move? (40 ms frames,
+  // normalised autocorrelation). Tones and Morse have a fixed pitch; noise has none.
+  const NF = Math.round(rate * .04), Lmin = Math.round(rate / 300), Lmax = Math.round(rate / 66), vf = [];
+  for (let i = 0; i + NF + Lmax <= x.length; i += NF) { let e0 = 0; for (let j = 0; j < NF; j++) e0 += x[i + j] ** 2; vf.push([e0, i]); }
+  const vthr = vf.length ? [...vf].sort((a, b) => a[0] - b[0])[Math.floor(vf.length * .4)][0] : 0, pitches = []; let loud = 0;
+  for (const [e0, i] of vf) { if (e0 < vthr || e0 <= 0) continue; loud++; let best = 0, bl = 0;
+    for (let L = Lmin; L <= Lmax; L++) { let c = 0, e1 = 0; for (let j = 0; j < NF; j++) { c += x[i + j] * x[i + j + L]; e1 += x[i + j + L] ** 2; }
+      const rr = c / Math.sqrt(e0 * e1 + 1e-12); if (rr > best) { best = rr; bl = L; } }
+    if (best >= .5) pitches.push(Math.log2(rate / bl)); }
+  const pm = pitches.reduce((a, b) => a + b, 0) / (pitches.length || 1);
+  const r = { syllabic: syl / tot, range, spread: at(.9) - at(.1), voiced: loud ? pitches.length / loud : 0,
+    pitchMove: pitches.length > 3 ? Math.sqrt(pitches.reduce((a, b) => a + (b - pm) ** 2, 0) / pitches.length) : 0 };
+  // Calibrated on real audio: KOA 850 kHz talk (17 of 20 clips pass), empty 20 m (0 of 9), a 20 m data signal (0 of 3).
+  // Loudness swings are kept low by receiver AGC and broadcast/ham audio processing, so they only need to be modest.
+  r.voice = r.syllabic >= .4 && r.voiced >= .2 && r.pitchMove >= .1 && r.range >= 2.5 && r.spread >= 700;
   return r;
 }
 // SSB dial estimates are good to about ±250 Hz (one waterfall column is ~230 Hz). Operators often sit on round
@@ -646,7 +660,7 @@ async function findVoice() {
     const cur = found.get(s.key) || s;                                // the entry may have been re-measured meanwhile
     if (r && r.voice) { cur.heardAt = Date.now(); delete cur.quietAt; stopHunt(`Someone's talking on ${fmtK(s.tune)} kHz ${s.mode.toUpperCase()}. Tuned in; use ±.1 to fine-tune if it sounds high or low.`); return; }
     cur.quietAt = Date.now();
-    if (r && r.range < 3 && r.syllabic < .2) cur.notVoice = Date.now();   // perfectly steady: a data signal, not a pause in a conversation
+    if (r && r.range < 3 && r.syllabic < .2 && r.voiced < .1 && r.spread > 300) cur.notVoice = Date.now();   // perfectly steady: a data signal, not a pause in a conversation
   }
   stopHunt(`Listened to ${cands.length} voice signal${cands.length > 1 ? 's' : ''}: nobody talking right now. Conversations come and go, so scan again in a minute and retry.`);
 }
