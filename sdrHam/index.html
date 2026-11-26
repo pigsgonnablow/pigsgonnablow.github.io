@@ -92,7 +92,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .sigs[hidden]{display:none}
 .stage.sigmode .hint{display:none}
 /* Signals view: waterfall and station list together. Wide screens: side by side. Phones: waterfall above the list. */
-.stage.sigmode .sigs{left:auto;width:min(46%,620px);padding:16px clamp(12px,2vw,22px) 18px;border-left:1px solid var(--line);background:#0a1219f2}
+.stage.sigmode .sigs{overflow-x:hidden;left:auto;width:min(46%,620px);padding:16px clamp(12px,2vw,22px) 18px;border-left:1px solid var(--line);background:#0a1219f2}
 .stage.sigmode .span{right:calc(min(46%,620px) + 16px)}
 .stage.sigmode .siglist button{grid-template-columns:6.6em minmax(0,1fr) 4.6em;gap:2px 10px;padding:8px 12px;min-height:48px}
 .stage.sigmode .siglist .mt{display:none}
@@ -466,16 +466,17 @@ function detFinalize() {
   }
 }
 const fmtK = hz => { const k = hz / 1000; return (k >= 1000 ? k.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/, ' ') : k.toFixed(1)); };
-let sigPress = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
+let sigPress = false, sigHover = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
 // Keep the station you're tuned to in view in the list (not when you just picked it there yourself).
 function revealOn() { if (fromList) { fromList = false; return; } const b = $('sigList').querySelector('button.on'); if (b) b.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
 $('sigList').addEventListener('pointerover', e => { const b = e.target.closest('button'); const s = b && found.get(+b.dataset.k); showGhost(s ? s.tune : null); });
-$('sigList').addEventListener('pointerleave', () => showGhost(null));
+$('sigList').addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') sigHover = true; });
+$('sigList').addEventListener('pointerleave', () => { showGhost(null); sigHover = false; renderSignals(); });
 $('sigList').addEventListener('focusin', e => { const b = e.target.closest('button'); const s = b && found.get(+b.dataset.k); showGhost(s ? s.tune : null); });
 $('sigList').addEventListener('pointerdown', () => { sigPress = true; });
 for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => setTimeout(() => { sigPress = false; }, 50));
 function renderSignals(force) {
-  if (!sigOn || (sigPress && !force)) return;   // don't swap the list out from under a finger
+  if (!sigOn || ((sigPress || sigHover) && !force)) return;   // don't reorder the list under a finger or the pointer
   const now = Date.now(); for (const [k, s] of found) if (now - s.seen > 15 * 60e3) found.delete(k);
   const hideAM = $('hideAM').checked, all = [...found.values()].filter(s => !hideAM || s.mode !== 'am').sort((a, b) => b.snr - a.snr), counts = new Map();
   for (const s of all) { const k = s.band.split(' · ')[0] || 'Outside the usual bands'; counts.set(k, (counts.get(k) || 0) + 1); }
@@ -490,7 +491,7 @@ function renderSignals(force) {
     : liveReady ? 'Measured from this receiver’s spectrum, strongest first. Tap one to tune and listen; Scan all bands looks beyond the current slice.'
     : snd ? 'This receiver stopped sending its waterfall, so new signals can’t be measured. Pick another receiver to scan.'
     : 'Connect to a receiver to see what’s on the air.';
-  const ago = s => { const t = (now - s.seen) / 1000; return t < 10 ? 'now' : t < 60 ? 'under a minute ago' : `${Math.round(t / 60)} min ago`; };
+  const ago = s => { const t = (now - s.seen) / 1000; return t < 10 ? 'now' : t < 60 ? '<1 min ago' : `${Math.round(t / 60)} min ago`; };
   const html = list.length ? list.map(s => `<li><button data-k="${s.key}" class="${Math.abs(st.tune - s.tune) < 400 ? 'on' : ''}">
       <span class="sf">${fmtK(s.tune)}<small>kHz</small></span>
       <span class="st"><b>${s.type} · ${s.mode.toUpperCase()}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
