@@ -551,9 +551,14 @@ const free = r => Math.max(0, r.max - r.users);
 // owner's choice, so we don't try to get around it: remember the receiver and prefer others.
 // limit 0: remembered for a week. A limit above 0 whose slots were taken: 30 minutes.
 let noApps = {}; try { noApps = JSON.parse(localStorage.getItem('wr.noApps') || '{}') || {}; } catch {}
-const appLimited = r => r && noApps[r.origin] && noApps[r.origin].until > Date.now() ? noApps[r.origin] : null;
+const hostOf = o => { try { return new URL(o).hostname; } catch { return o; } };
+// A "no outside apps" setting is the owner's policy, and owners often run several receivers on one host (ports
+// 8073, 8074, …): treat those alike. A limit above 0 (slots merely taken) applies to that one receiver only.
+const appLimited = r => { if (!r) return null; const now = Date.now(), a = noApps[r.origin], h = noApps['host:' + hostOf(r.origin)];
+  return a && a.until > now ? a : h && h.until > now ? h : null; };
 function rememberNoApps(origin, limit) {
   noApps[origin] = { limit, until: Date.now() + (limit > 0 ? 30 * 60e3 : 7 * 86400e3) };
+  if (limit === 0) noApps['host:' + hostOf(origin)] = noApps[origin];
   for (const k in noApps) if (noApps[k].until < Date.now()) delete noApps[k];
   try { localStorage.setItem('wr.noApps', JSON.stringify(noApps)); } catch {} gDirty = true; }
 const usable = r => !r.offline && r.lat !== null && r.lon !== null && Number.isFinite(+r.lat) && Number.isFinite(+r.lon);
