@@ -94,8 +94,9 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 /* Signals view: waterfall and station list together. Wide screens: side by side. Phones: waterfall above the list. */
 .stage.sigmode .sigs{overflow-x:hidden;left:auto;width:min(46%,620px);padding:16px clamp(12px,2vw,22px) 18px;border-left:1px solid var(--line);background:#0a1219f2}
 .stage.sigmode .span{right:calc(min(46%,620px) + 16px)}
-.stage.sigmode .siglist button{grid-template-columns:6.6em minmax(0,1fr) 4.6em;gap:2px 10px;padding:8px 12px;min-height:48px}
+.stage.sigmode .siglist button{grid-template-columns:6.6em minmax(0,1fr) auto;gap:2px 10px;padding:8px 12px;min-height:48px}
 .stage.sigmode .siglist .mt{display:none}
+.stage.sigmode .siglist .ag{white-space:nowrap;text-align:right}
 @media(max-width:860px){
   .stage.sigmode{height:calc(250px + min(62vh,560px))}
   .stage.sigmode canvas{height:250px!important}
@@ -522,7 +523,10 @@ try { $('hideAM').checked = localStorage.getItem('wr.hideAM') === '1'; } catch {
 $('hideAM').onchange = () => { try { localStorage.setItem('wr.hideAM', $('hideAM').checked ? '1' : '0'); } catch {} renderSignals(true); };
 $('viewWf').onclick = () => setView(false); $('viewSig').onclick = () => setView(true);
 // Only re-detect when new rows came in: otherwise old rows would keep being reported as heard "now".
-setInterval(() => { if (sigOn || scan) { if (!scan && det.fresh) { det.fresh = 0; detFinalize(); } renderSignals(); } }, 2000);
+setInterval(() => {
+  // Watchdog: a scan step that hasn't moved on in 12 s (slowed timers, a stuck receiver) ends the scan.
+  if (scan && performance.now() - scan.at > 12000) { endScan(); status('The band scan stalled, so it was stopped. Press Scan all bands to try again.', true); }
+  if (sigOn || scan) { if (!scan && det.fresh) { det.fresh = 0; detFinalize(); } renderSignals(); } }, 2000);
 function detReset() { det.rows = []; det.lo = det.hi = 0; det.fresh = 0; }
 // Band scan (live only): step the waterfall across every broadcast and ham band; audio stays where it is.
 function scanPlan() {
@@ -538,17 +542,21 @@ function scanPlan() {
 }
 function wfGoto(cf) { const span = kiwiBw / 2 ** ZOOM;
   wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); texData.fill(0); tex.needsUpdate = true; setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
-function endScan() { if (!scan) return; clearTimeout(scan.timer); scan = null; if (wf && wf.readyState === 1) kiwiCenter(); renderSignals(); }
+function endScan() { if (!scan) return; clearTimeout(scan.timer); scan = null;
+  if (wf && wf.readyState === 1) kiwiCenter(); else setSpan(st.lo, st.hi, 'waterfall paused'); renderSignals(); }
+// Stop a scan without asking the receiver for anything (its waterfall connection is gone).
+function stopScan(label) { if (!scan) return; clearTimeout(scan.timer); scan = null; setSpan(st.lo, st.hi, label); }
 $('scanBtn').onclick = () => {
   if (scan) return endScan();
   if (!wf || wf.readyState !== 1) return;
-  scan = { plan: scanPlan(), i: 0, timer: null };
-  const step = () => { if (!scan) return; if (scan.i >= scan.plan.length || !wf || wf.readyState !== 1) return endScan();
-    wfGoto(scan.plan[scan.i++]); renderSignals(true); const t0 = performance.now();
+  scan = { plan: scanPlan(), i: 0, timer: null, at: performance.now() };
+  // Every step is guarded: whatever goes wrong, the scan ends cleanly instead of sitting on one slice for good.
+  const step = () => { try { if (!scan) return; if (scan.i >= scan.plan.length || !wf || wf.readyState !== 1) return endScan();
+    wfGoto(scan.plan[scan.i++]); scan.at = performance.now(); renderSignals(true); const t0 = performance.now();
     // Stay until 12 rows of this slice have arrived (receivers send between a few and ~25 a second), at most 6 s.
-    const wait = () => { if (!scan) return; if ((det.lo === st.lo && det.rows.length >= 12) || performance.now() - t0 > 6000) { detFinalize(); step(); }
-      else scan.timer = setTimeout(wait, 250); };
-    scan.timer = setTimeout(wait, 400); };
+    const wait = () => { try { if (!scan) return; if ((det.lo === st.lo && det.rows.length >= 12) || performance.now() - t0 > 6000) { detFinalize(); step(); }
+      else scan.timer = setTimeout(wait, 250); } catch (err) { console.error(err); endScan(); } };
+    scan.timer = setTimeout(wait, 400); } catch (err) { console.error(err); endScan(); } };
   step();
 };
 
@@ -903,13 +911,13 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     if (retry) return endSession(`${name} ${why}`);
     if (current) return tryNext(`${current.name} ${why}`, from);
     status(`That receiver ${why}${!viaRelay && location.protocol === 'https:' ? ' A page served over https can only reach receivers in the directory.' : ''}`, true); };
-  try { snd = new WebSocket(url('SND')); wf = new WebSocket(url('W/F')); } catch { return fail("couldn't be reached."); }
-  const S = snd, F = wf;
+  try { snd = new WebSocket(url('SND')); } catch { return fail("couldn't be reached."); }
+  const S = snd; let wfTries = 0;
   // Keepalives ride on incoming data, once a second per socket, like the official client: browsers slow timers in
   // background tabs, but they still deliver messages. The 5-second timer below is only a backstop.
   const ka = w => { const t = Date.now(); if (w.readyState === 1 && t - (w.ka || 0) >= 1000) { w.ka = t; w.send('SET keepalive'); } };
-  for (const w of [S, F]) { w.binaryType = 'arraybuffer'; w.onopen = () => w.send('SET auth t=kiwi p=');
-    w.onerror = () => { if (S === snd) fail("couldn't be reached."); }; }
+  S.binaryType = 'arraybuffer'; S.onopen = () => S.send('SET auth t=kiwi p=');
+  S.onerror = () => { if (S === snd) fail("couldn't be reached."); };
   S.onclose = e => { if (S !== snd) return;
     if (e.code === 4429 && e.reason !== 'receiver busy on relay') return endSession(e.reason === 'relay full'
       ? 'This site’s relay is full right now. Try again in a few minutes.'
@@ -922,8 +930,6 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     if (drops.length > 3) return endSession(`${name} keeps dropping the connection. Try another receiver.`);
     reconnect('The connection dropped.', 1);                                          // network blip, server restart, phone sleep…
   };
-  F.onclose = () => { if (F !== wf) return; wf = null; detReset(); renderSignals();
-    if (live) status('The receiver stopped sending its waterfall; audio continues.', true); };   // before live: the audio socket decides
   guard = setTimeout(() => { if (S === snd) fail("didn't answer."); }, 8000);
   S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; ka(S); const tag = new TextDecoder().decode(e.data.slice(0, 3));
     if (tag === 'MSG') { const m = parseMsg(e.data);
@@ -943,24 +949,37 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     } else if (tag === 'SND' && listening && e.data.byteLength > 10 && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) {
       const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
       for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; play(out, kiwiRate); } };
+  // The waterfall is its own connection. Receivers sometimes drop it while audio carries on (they often have fewer
+  // waterfall slots than audio slots): reopen just the waterfall, up to 3 times, rather than leaving it frozen.
+  function openWf() {
+    let F; try { F = new WebSocket(url('W/F')); } catch { return; }
+    wf = F; F.rows = 0; F.binaryType = 'arraybuffer'; F.onopen = () => F.send('SET auth t=kiwi p=');
+    F.onclose = () => { if (F !== wf) return; wf = null; stopScan('waterfall paused'); detReset(); renderSignals();
+      if (!live || S !== snd) return;   // before live: the audio connection decides what happens
+      if (wfTries < 3) { wfTries++; status(`The waterfall stream dropped; reopening it (try ${wfTries} of 3). Audio continues.`, true);
+        setTimeout(() => { if (S === snd && !wf) openWf(); }, 1500 * wfTries); }
+      else status('The receiver stopped sending its waterfall; audio continues.', true); };
   F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; ka(F); const tag = new TextDecoder().decode(e.data.slice(0, 3));
-    if (tag === 'MSG') { const m = parseMsg(e.data);
-      if (m.too_busy !== undefined && live) return appKick(+m.too_busy || 0);
-      if (m.bandwidth) kiwiBw = +m.bandwidth;
-      if (+m.wf_fft_size > 0) wfFft = +m.wf_fft_size;
-      if (+m.zoom_max > 0) wfZmax = +m.zoom_max;
-      if (m.wf_setup !== undefined || m.zoom_max !== undefined) { F.send('SERVER DE CLIENT lmnop-waterfall W/F'); F.send('SET maxdb=0 mindb=-100');
-        F.send('SET wf_speed=4'); F.send('SET wf_comp=0'); kiwiCenter(); } }
-    else if (tag === 'W/F' && e.data.byteLength > 16) {
-      if (wfTrust) {   // skip rows from before the last re-centre or scan step, which would land at the wrong frequencies
-        const dv = new DataView(e.data), startHz = dv.getUint32(4, true) * kiwiBw / (wfFft * 2 ** wfZmax), zm = dv.getUint32(8, true) & 0xffff;
-        if (zm !== ZOOM || Math.abs(startHz - st.lo) > (st.hi - st.lo) / BINS * 1.5) {
-          // If rows never line up with what we asked for, this receiver reports positions differently: stop checking.
-          if (wfAskedAt && performance.now() - wfAskedAt > 3000) wfTrust = false; else return; } }
-      if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
-      const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
-      for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
-      pushRow(r); } };
+      if (tag === 'MSG') { const m = parseMsg(e.data);
+        if (m.too_busy !== undefined && live) return appKick(+m.too_busy || 0);
+        if (m.bandwidth) kiwiBw = +m.bandwidth;
+        if (+m.wf_fft_size > 0) wfFft = +m.wf_fft_size;
+        if (+m.zoom_max > 0) wfZmax = +m.zoom_max;
+        if (m.wf_setup !== undefined || m.zoom_max !== undefined) { F.send('SERVER DE CLIENT lmnop-waterfall W/F'); F.send('SET maxdb=0 mindb=-100');
+          F.send('SET wf_speed=4'); F.send('SET wf_comp=0'); kiwiCenter(); } }
+      else if (tag === 'W/F' && e.data.byteLength > 16) {
+        if (wfTrust) {   // skip rows from before the last re-centre or scan step, which would land at the wrong frequencies
+          const dv = new DataView(e.data), startHz = dv.getUint32(4, true) * kiwiBw / (wfFft * 2 ** wfZmax), zm = dv.getUint32(8, true) & 0xffff;
+          if (zm !== ZOOM || Math.abs(startHz - st.lo) > (st.hi - st.lo) / BINS * 1.5) {
+            // If rows never line up with what we asked for, this receiver reports positions differently: stop checking.
+            if (wfAskedAt && performance.now() - wfAskedAt > 3000) wfTrust = false; else return; } }
+        if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
+        if (++F.rows === 60) wfTries = 0;   // flowing again: a later drop gets fresh retries
+        const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
+        for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
+        pushRow(r); } };
+  }
+  openWf();
   keep = setInterval(() => { for (const w of [snd, wf]) if (w) ka(w); }, 5000);
   $('connectHost').textContent = 'Disconnect'; connectBtn(); resetIdle(); if (!retry) status('Connecting…');
 }
