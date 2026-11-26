@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.1.0" data-date="2026-11-26">
+<meta name="app-version" content="1.2.0" data-date="2026-11-26">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -107,6 +107,8 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .sighead{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-bottom:12px}
 .sigctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .sigctl label{min-height:44px;color:var(--ink)}
+.siglist em{font:600 11px "IBM Plex Sans",sans-serif;font-style:normal;padding:1px 7px;border-radius:9px;margin-left:6px;vertical-align:1px}
+.siglist em.heard{background:#1f6f4a;color:#e8fff3}.siglist em.quiet{background:#2a3440;color:var(--mute)}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 12px}
 .chips button{min-height:36px;padding:4px 12px;border-radius:18px;border:1px solid var(--line);background:#0f1b25;color:var(--mute);font:14px "IBM Plex Sans",sans-serif;cursor:pointer}
 .chips button[aria-pressed=true]{border-color:var(--teal);color:var(--ink);background:#123036}
@@ -145,7 +147,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <div class="sighead"><div><b>On the air</b><span id="sigNote">Frequencies with real activity, strongest first, measured from the spectrum.</span></div>
       <div class="sigctl"><select id="sigBand" aria-label="Show band"><option value="">All bands</option></select>
         <select id="sigMin" aria-label="Minimum strength"><option value="0">Any strength</option><option value="15">15 dB or more</option><option value="25">25 dB or more</option><option value="35">35 dB or more</option></select>
-        <button class="btn" id="scanBtn">Scan all bands</button></div></div>
+        <button class="btn" id="scanBtn">Scan all bands</button><button class="btn main" id="voiceBtn">Find a voice</button></div></div>
     <div class="chips" id="sigKinds" role="group" aria-label="Show these kinds of signal"></div>
     <ol class="siglist" id="sigList"></ol>
   </div>
@@ -289,6 +291,7 @@ const ro = new ResizeObserver(resize); ro.observe(stage); addEventListener('resi
 /* ---------- tuning + readout ---------- */
 const fmt = hz => { const k = (hz / 1000).toFixed(2); const [a, b] = k.split('.'); return a.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + '.' + b; };
 function setTune(hz, fromLive) {
+  if (hunt && !huntTuning && !fromLive) stopHunt();
   st.tune = Math.max(10000, Math.min(29990000, Math.round(hz / 10) * 10));
   $('dial').innerHTML = fmt(st.tune) + '<small>kHz</small>';
   if (document.activeElement !== $('freq')) $('freq').value = (st.tune / 1000).toFixed(2);
@@ -349,6 +352,7 @@ function watchClock(now) {
 const LEAD = .25;   // seconds of audio kept queued ahead: enough to ride out network jitter, small enough to tune by ear
 function play(samples, rate) {
   if (!samples.length) return;
+  if (probe) { probe.x.push(samples); probe.rate = rate; }   // Find a voice is listening
   watchClock(ctx.currentTime); if (!ctx) return;
   const now = ctx.currentTime, lead = nextT - now;
   if (lead > 1) flushAudio(true);              // far behind live after a stall: one clean cut back to now (keeps the watchdog's measurement)
@@ -401,6 +405,41 @@ function detAdd(row) {
 const CWSEG = [[1800e3, 1840e3], [3500e3, 3570e3], [7000e3, 7040e3], [10100e3, 10150e3], [14000e3, 14070e3],
   [18068e3, 18095e3], [21000e3, 21070e3], [24890e3, 24915e3], [28000e3, 28070e3]];   // Morse ends of the ham bands
 const ssbMode = f => f >= 10e6 || (f > 5.3e6 && f < 5.41e6) ? 'usb' : 'lsb';           // ham convention
+/* ---------- listening for speech ---------- */
+// Speech has a syllable rhythm: its loudness swings by several dB a few times a second (2–8 Hz), and it spreads over
+// many pitches. Band noise is steady; Morse and carriers sit on a single pitch. Measured on real 20 m signals: a
+// talker scored 0.62 for rhythm with 17 dB swings, empty frequencies 0.12–0.18 with 3 dB, a carrier spanned 120 Hz.
+let probe = null;
+function fft(re, im) { const n = re.length;
+  for (let i = 1, j = 0; i < n; i++) { let b = n >> 1; for (; j & b; b >>= 1) j ^= b; j ^= b; if (i < j) { [re[i], re[j]] = [re[j], re[i]]; [im[i], im[j]] = [im[j], im[i]]; } }
+  for (let len = 2; len <= n; len <<= 1) { const a = -2 * Math.PI / len;
+    for (let i = 0; i < n; i += len) for (let k = 0; k < len / 2; k++) { const c = Math.cos(a * k), sn = Math.sin(a * k), u = i + k, v = u + len / 2;
+      const tr = re[v] * c - im[v] * sn, ti = re[v] * sn + im[v] * c; re[v] = re[u] - tr; im[v] = im[u] - ti; re[u] += tr; im[u] += ti; } } }
+function speechScore(chunks, rate) {
+  const x = new Float32Array(chunks.reduce((n, c) => n + c.length, 0)); let o = 0; for (const c of chunks) { x.set(c, o); o += c.length; }
+  const fl = Math.round(rate * .02), E = [];
+  for (let i = 0; i + fl <= x.length; i += fl) { let e = 0; for (let j = i; j < i + fl; j++) e += x[j] * x[j]; E.push(10 * Math.log10(e / fl + 1e-12)); }
+  if (E.length < 100) return null;                                    // under 2 s of audio
+  const srt = [...E].sort((a, b) => a - b), range = srt[Math.floor(E.length * .9)] - srt[Math.floor(E.length * .1)];
+  const m = E.reduce((a, b) => a + b, 0) / E.length; let syl = 0, tot = 0;
+  for (let f = .5; f <= 25; f += .25) { let re = 0, im = 0; for (let n = 0; n < E.length; n++) { const v = E[n] - m, w = 2 * Math.PI * f * n / 50; re += v * Math.cos(w); im -= v * Math.sin(w); }
+    const pw = re * re + im * im; tot += pw; if (f >= 2 && f <= 8) syl += pw; }
+  // pitch spread of the louder moments
+  const N = 256, P = new Float64Array(N / 2), frames = [];
+  for (let i = 0; i + N <= x.length; i += N) { let e = 0; for (let j = 0; j < N; j++) e += x[i + j] ** 2; frames.push([e, i]); }
+  const thr = [...frames].sort((a, b) => a[0] - b[0])[Math.floor(frames.length * .6)][0];
+  for (const [e, i] of frames) if (e >= thr) { const re = new Float64Array(N), im = new Float64Array(N);
+    for (let j = 0; j < N; j++) re[j] = x[i + j] * (.5 - .5 * Math.cos(2 * Math.PI * j / N)); fft(re, im);
+    for (let k = 2; k < N / 2; k++) P[k] += re[k] * re[k] + im[k] * im[k]; }
+  const pt = P.reduce((a, b) => a + b, 0), at = q => { let c = 0; for (let k = 0; k < P.length; k++) { c += P[k]; if (c >= pt * q) return k * rate / N; } return 0; };
+  const r = { syllabic: syl / tot, range, spread: at(.9) - at(.1) };
+  r.voice = r.syllabic >= .35 && r.range >= 6 && r.spread >= 700;
+  return r;
+}
+// SSB dial estimates are good to about ±250 Hz (one waterfall column is ~230 Hz). Operators often sit on round
+// numbers, so an estimate that close to a whole kHz (or 150 Hz from a half) is most likely that.
+function snapDial(hz) { const k = Math.round(hz / 1000) * 1000, h = Math.round(hz / 500) * 500;
+  return Math.abs(hz - k) <= 250 ? k : Math.abs(hz - h) <= 150 ? h : Math.round(hz / 100) * 100; }
 function classify(f, width, steady, loHz, hiHz, carrier) {
   const ts = TIME.find(t => Math.abs(f - t) < 2500);
   if (ts && width >= 600) return { type: 'Time signal', mode: 'am', tune: ts };
@@ -411,9 +450,9 @@ function classify(f, width, steady, loHz, hiHz, carrier) {
   // AM has a steady carrier in the middle of its sidebands; SSB voice has no carrier and comes and goes.
   if ((width >= 4000 && carrier) || (width >= 2000 && steady && carrier) || (bc && width >= 1200 && steady))
     return { type: bc ? 'Broadcast station' : 'AM signal', mode: 'am', tune: bc && f > 2.3e6 ? Math.round(f / 5000) * 5000 : Math.round(f / 1000) * 1000 };
-  if (width >= 4000) return { type: 'Several voices', mode: ssbMode(f), tune: Math.round(f / 100) * 100 };
+  if (width >= 4000) return { type: 'Several voices', mode: ssbMode(f), tune: snapDial(ssbMode(f) === 'usb' ? loHz - 250 : hiHz + 250) };
   if (width >= 1200) { const usb = ssbMode(f) === 'usb';
-    return { type: 'Voice (SSB)', mode: usb ? 'usb' : 'lsb', tune: Math.round((usb ? loHz - 250 : hiHz + 250) / 100) * 100 }; }
+    return { type: 'Voice (SSB)', mode: usb ? 'usb' : 'lsb', tune: snapDial(usb ? loHz - 250 : hiHz + 250) }; }
   return { type: steady ? 'Carrier or beacon' : 'Morse or data', mode: 'cw', tune: Math.round((f - 500) / 10) * 10 };
 }
 function detFinalize() {
@@ -430,9 +469,12 @@ function detFinalize() {
     const snr = Math.round(top / 3), band = bandsAt(f).map(x => x[2]).join(' · ');
     // Broadcasters and time signals sit on fixed channels 5 kHz apart: match them by channel, not by width.
     if (!group && (c.type === 'Time signal' || (c.type === 'Broadcast station' && f > 2.3e6))) group = 'ch:' + c.tune;
-    let hit = null; for (const s of found.values()) if (group ? s.group === group : !s.group && Math.abs(s.f - f) < Math.max(700, width / 2, s.width / 2)) { hit = s; break; }
+    const voice = /Voice|voices/.test(c.type);
+    let hit = null; for (const s of found.values()) if (group ? s.group === group : !s.group && (Math.abs(s.f - f) < Math.max(700, width / 2, s.width / 2)
+      || (voice && /Voice|voices/.test(s.type) && Math.abs(s.tune - c.tune) < 1500))) { hit = s; break; }   // one station, measured twice
     if (hit && hit.seen === now) { hit.snr = Math.max(hit.snr, snr); return; }      // already reported in this pass
-    found.set(hit ? hit.key : ++sigKey, { key: hit ? hit.key : sigKey, f, width, snr, band, group, seen: now, ...c });
+    found.set(hit ? hit.key : ++sigKey, { key: hit ? hit.key : sigKey, f, width, snr, band, group, seen: now, ...c,
+      ...(hit && { heardAt: hit.heardAt, quietAt: hit.quietAt }) });   // keep what Find a voice learnt about it
   };
   // 1. FT8: every station on a dial frequency shares one entry; then leave those bins out.
   for (const d of FT8) { const a = binOf(d * 1000 + 150), z = binOf(d * 1000 + 3100); if (z < 0 || a >= BINS) continue;
@@ -472,8 +514,19 @@ function detFinalize() {
       if (top < PEAK || width > 20000 || !wsum) continue;
       for (const r of R) { let mx = 0; for (let i = s0; i <= e0; i++) if (r[i] > mx) mx = r[i]; if (mx >= ON) occ++; }
       const at = (pk - s0 + .5) / (e0 - s0 + 1), carrier = at > .3 && at < .7 && top - wsum / (e0 - s0 + 1) > 12 && p50[pk] >= ON;  // strong, steady middle peak
-      const f = fsum / wsum;
-      put(classify(f, width, occ / n > .85, lo2, hi2, carrier), f, width, top);
+      const f = fsum / wsum, c = classify(f, width, occ / n > .85, lo2, hi2, carrier);
+      if (c.type === 'Several voices') {
+        // Neighbouring conversations run together: give each SSB-sized slot (2.9 kHz) with energy its own entry,
+        // tuned to that slot's edge. Tuning to the middle of the block would land between stations.
+        const usb = c.mode === 'usb', SLOT = 2900; let made = 0;
+        for (let k = 0; k < 7 && k * SLOT < width; k++) {
+          const a = usb ? lo2 + k * SLOT : hi2 - (k + 1) * SLOT, z = a + SLOT; let t = 0;
+          for (let i = cl(binOf(a)); i <= cl(binOf(z)); i++) if (i >= s0 && i <= e0) t = Math.max(t, p90[i] - floor);
+          if (t < PEAK) continue;
+          put({ type: 'Voice (SSB)', mode: c.mode, tune: snapDial(usb ? a - 250 : z + 250) }, (a + z) / 2, SLOT, t); made++; }
+        if (made) continue;
+      }
+      put(c, f, width, top);
     }
     b = e + 1;
   }
@@ -498,6 +551,7 @@ $('sigKinds').onclick = e => { const b = e.target.closest('button'); if (!b) ret
   else if (allKinds()) showKinds = new Set([k]);                       // first pick: just this kind
   else { showKinds.has(k) ? showKinds.delete(k) : showKinds.add(k); if (!showKinds.size) showKinds = new Set(KINDS.map(K => K[0])); }
   saveFilters(); renderSignals(true); updatePins(); };
+$('voiceBtn').onclick = findVoice;
 $('sigMin').onchange = () => { saveFilters(); renderSignals(true); updatePins(); };
 let sigPress = false, sigHover = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
 // Keep the station you're tuned to in view in the list (not when you just picked it there yourself).
@@ -532,7 +586,7 @@ function renderSignals(force) {
   const ago = s => { const t = (now - s.seen) / 1000; return t < 10 ? 'now' : t < 60 ? '<1 min ago' : `${Math.round(t / 60)} min ago`; };
   const html = list.length ? list.map(s => `<li><button data-k="${s.key}" class="${Math.abs(st.tune - s.tune) < 400 ? 'on' : ''}">
       <span class="sf">${fmtK(s.tune)}<small>kHz</small></span>
-      <span class="st"><b>${s.type} · ${s.mode.toUpperCase()}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
+      <span class="st"><b>${s.type} · ${s.mode.toUpperCase()}${s.heardAt && now - s.heardAt < 600e3 ? ' <em class="heard">voice heard</em>' : s.quietAt && now - s.quietAt < 600e3 ? ' <em class="quiet">quiet just now</em>' : ''}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
       <span class="mt" title="${s.snr} dB above the noise"><i style="width:${Math.min(100, s.snr * 2.5)}%"></i></span>
       <span class="ag">${s.snr} dB · ${ago(s)}</span></button></li>`).join('')
     : `<li class="empty">${!liveReady && !found.size ? 'Nothing yet. Connect to a receiver first.'
@@ -544,15 +598,49 @@ function renderSignals(force) {
   sigHtml = html; $('sigList').innerHTML = html; updatePins();
   if (fk) { const b = $('sigList').querySelector(`[data-k="${fk}"]`); if (b) b.focus(); }   // keep keyboard focus on the same signal
 }
-$('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) return; const s = found.get(+b.dataset.k); if (!s) return;
-  if (scan) endScan();
-  if (!snd) return status('Connect to a receiver first.', true);
-  $('mode').value = s.mode; fromList = true;
+function tuneToSignal(s) {
+  $('mode').value = s.mode; fromList = true; flushAudio();
   setTune(s.tune);
   const x = (s.tune - st.lo) / (st.hi - st.lo);
   if (x < .25 || x > .75) kiwiCenter();    // outside the middle half: bring it to the middle of the waterfall
   focusOn(s.tune); showGhost(null);
+}
+$('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) return; const s = found.get(+b.dataset.k); if (!s) return;
+  if (scan) endScan(); if (hunt) stopHunt();
+  if (!snd) return status('Connect to a receiver first.', true);
+  tuneToSignal(s);
   if (!listening) $('power').click(); renderSignals(true); };
+// Find a voice: listen to each voice signal in turn (the most recent and strongest first) and stop on the first
+// where someone is actually talking. Conversations come and go, so a signal seen a minute ago may be quiet now.
+let hunt = null;
+function stopHunt(msg) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; if (msg) status(msg); renderSignals(true); }
+async function findVoice() {
+  if (hunt) return stopHunt('Stopped listening for voices.');
+  if (!snd) return status('Connect to a receiver first.', true);
+  if (scan) endScan();
+  const now = Date.now(), min = +$('sigMin').value;
+  const cands = [...found.values()].filter(s => kindOf(s) === 'voice' && s.snr >= min && !(s.quietAt && now - s.quietAt < 90e3))
+    .sort((a, b) => (b.snr - (now - b.seen) / 12e3) - (a.snr - (now - a.seen) / 12e3)).slice(0, 12);
+  if (!cands.length) return status(found.size ? 'No voice signals to try. Press Scan all bands to look across the bands, then try again.'
+    : 'Nothing found yet. Press Scan all bands first, then Find a voice.', true);
+  if (!listening) $('power').click();
+  const me = hunt = { n: cands.length };
+  for (let i = 0; i < cands.length; i++) {
+    const s = cands[i]; if (hunt !== me) return;
+    $('voiceBtn').textContent = `Stop (${i + 1} of ${cands.length})`;
+    status(`Listening for a voice on ${fmtK(s.tune)} kHz (${i + 1} of ${cands.length})…`);
+    huntTuning = true; tuneToSignal(s); huntTuning = false; renderSignals(true);
+    await new Promise(r => setTimeout(r, 1200));                     // let the receiver retune and old audio drain
+    if (hunt !== me) return; probe = { x: [], rate: 12000 };
+    await new Promise(r => setTimeout(r, 4500));
+    if (hunt !== me) return; const r = probe.x.length ? speechScore(probe.x, probe.rate) : null; probe = null;
+    const cur = found.get(s.key) || s;                                // the entry may have been re-measured meanwhile
+    if (r && r.voice) { cur.heardAt = Date.now(); delete cur.quietAt; stopHunt(`Someone's talking on ${fmtK(s.tune)} kHz ${s.mode.toUpperCase()}. Tuned in; use ±.1 to fine-tune if it sounds high or low.`); return; }
+    cur.quietAt = Date.now();
+  }
+  stopHunt(`Listened to ${cands.length} voice signal${cands.length > 1 ? 's' : ''}: nobody talking right now. Conversations come and go, so scan again in a minute and retry.`);
+}
+let huntTuning = false;
 function setView(sig) {
   sigOn = sig; $('viewWf').setAttribute('aria-pressed', !sig); $('viewSig').setAttribute('aria-pressed', sig);
   $('sigs').hidden = !sig; $('stage').classList.toggle('sigmode', sig); if (sig) { detFinalize(); renderSignals(true); }
@@ -855,7 +943,7 @@ function kiwiCenter() {
 // the receiver's owner may still set their own time limits.
 function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
   idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
-function kiwiClose() { if (scan) { clearTimeout(scan.timer); scan = null; } detReset(); flushAudio();
+function kiwiClose() { if (scan) { clearTimeout(scan.timer); scan = null; } if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connectHost').textContent = 'Connect'; connectBtn(); }
 // The main button always says what pressing it will do.
