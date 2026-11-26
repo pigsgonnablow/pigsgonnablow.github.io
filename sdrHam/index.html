@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.2.3" data-date="2026-11-26">
+<meta name="app-version" content="1.2.4" data-date="2026-11-26">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -673,6 +673,7 @@ function sweepSpots(skip) {
     const i0 = Math.max(0, Math.floor((lo - det.lo) / binHz)), i1 = Math.min(BINS - 1, Math.floor((hi - det.lo) / binHz)); if (i1 <= i0) continue;
     let m = 0; for (let i = i0; i <= i1; i++) m += mean[i]; m /= i1 - i0 + 1;
     if (m - floor < 3 || skip.some(t => Math.abs(t - d) < 1500)) continue;   // nothing there (under ~1 dB), or tried already
+    if (FT8.some(k => lo < k * 1000 + 3100 && hi > k * 1000) || CWSEG.some(([a2, b2]) => lo < b2 && hi > a2)) continue;   // FT8 and Morse live here, not voices
     out.push({ d, m: m - floor, usb });
   }
   return out.sort((x, y) => y.m - x.m).slice(0, 30);
@@ -683,7 +684,8 @@ async function findVoice() {
   if (!snd) return status('Connect to a receiver first.', true);
   if (scan) endScan();
   const now = Date.now(), min = +$('sigMin').value;
-  const cands = [...found.values()].filter(s => kindOf(s) === 'voice' && s.snr >= min && !(s.quietAt && now - s.quietAt < 90e3) && !(s.heardAt && now - s.heardAt < 90e3))   // press again: the next one
+  const cands = [...found.values()].filter(s => kindOf(s) === 'voice' && s.snr >= min && !(s.quietAt && now - s.quietAt < 90e3) && !(s.heardAt && now - s.heardAt < 90e3)   // press again: the next one
+      && ((s.tune > st.lo && s.tune < st.hi) || now - s.seen < 120e3))   // on screen, or seen in the last 2 minutes (a scan): not stale entries from another band
     .sort((a, b) => (b.snr - (now - b.seen) / 12e3) - (a.snr - (now - a.seen) / 12e3)).slice(0, 12);
   if (!cands.length && !sweepSpots([]).length) return status(found.size ? 'No voice signals to try here. Tune to a ham band (20 m in the day, 40 or 80 m in the evening), or press Scan all bands, then try again.'
     : 'Nothing found yet. Tune to a ham band or press Scan all bands, then Find a voice.', true);
