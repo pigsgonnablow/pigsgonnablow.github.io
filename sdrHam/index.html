@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.0.0" data-date="2026-11-26">
+<meta name="app-version" content="1.1.0" data-date="2026-11-26">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -107,6 +107,11 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .sighead{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-bottom:12px}
 .sigctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .sigctl label{min-height:44px;color:var(--ink)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 12px}
+.chips button{min-height:36px;padding:4px 12px;border-radius:18px;border:1px solid var(--line);background:#0f1b25;color:var(--mute);font:14px "IBM Plex Sans",sans-serif;cursor:pointer}
+.chips button[aria-pressed=true]{border-color:var(--teal);color:var(--ink);background:#123036}
+.chips button small{opacity:.7;margin-left:4px}
+.chips button.all{border-style:dashed}
 .sighead b{font:600 20px "Chakra Petch",sans-serif;display:block}
 .sighead span{font-size:14px;color:var(--mute)}
 .siglist{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-width:1240px}
@@ -138,7 +143,10 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
   <canvas id="gl"></canvas>
   <div class="sigs" id="sigs" hidden>
     <div class="sighead"><div><b>On the air</b><span id="sigNote">Frequencies with real activity, strongest first, measured from the spectrum.</span></div>
-      <div class="sigctl"><label><input type="checkbox" id="hideAM"> Hide AM</label><select id="sigBand" aria-label="Show band"><option value="">All bands</option></select><button class="btn" id="scanBtn">Scan all bands</button></div></div>
+      <div class="sigctl"><select id="sigBand" aria-label="Show band"><option value="">All bands</option></select>
+        <select id="sigMin" aria-label="Minimum strength"><option value="0">Any strength</option><option value="15">15 dB or more</option><option value="25">25 dB or more</option><option value="35">35 dB or more</option></select>
+        <button class="btn" id="scanBtn">Scan all bands</button></div></div>
+    <div class="chips" id="sigKinds" role="group" aria-label="Show these kinds of signal"></div>
     <ol class="siglist" id="sigList"></ol>
   </div>
   <div class="hud"><div class="dial" id="dial">7 030.00<small>kHz</small></div><div class="what" id="what">Pick a receiver below</div></div>
@@ -246,7 +254,7 @@ scene.add(pins, ghost);
 const xOf = hz => -W / 2 + W * (hz - st.lo) / (st.hi - st.lo);
 function updatePins() {
   const pts = [];
-  for (const s of found.values()) if (s.tune > st.lo && s.tune < st.hi && (!$('hideAM').checked || s.mode !== 'am')) {
+  for (const s of found.values()) if (s.tune > st.lo && s.tune < st.hi && sigShown(s)) {
     const x = xOf(s.tune); pts.push(x, 0, D / 2 + .05, x, .45, D / 2 + .05); }
   const g = pins.geometry; g.dispose(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); pins.visible = sigOn && pts.length > 0;
 }
@@ -471,6 +479,26 @@ function detFinalize() {
   }
 }
 const fmtK = hz => { const k = hz / 1000; return (k >= 1000 ? k.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/, ' ') : k.toFixed(1)); };
+// Kinds of signal the list can show. Tapping a kind while all are shown shows only that kind; further taps add or
+// remove kinds; "All" shows everything again. Remembered between visits.
+const KINDS = [['voice', 'Voice', t => /Voice|voices/.test(t)], ['bc', 'Broadcast & AM', t => /Broadcast|AM signal/.test(t)],
+  ['morse', 'Morse', t => /Morse/.test(t)], ['ft8', 'FT8', t => /FT8/.test(t)], ['beacon', 'Beacons', t => /Carrier/.test(t)], ['time', 'Time signals', t => /Time/.test(t)]];
+const kindOf = s => (KINDS.find(k => k[2](s.type)) || KINDS[0])[0];
+let showKinds = new Set(KINDS.map(k => k[0]));
+try { const saved = JSON.parse(localStorage.getItem('wr.sigKinds') || 'null');
+  if (Array.isArray(saved) && saved.length) showKinds = new Set(saved.filter(k => KINDS.some(K => K[0] === k)));
+  else if (localStorage.getItem('wr.hideAM') === '1') showKinds.delete('bc');        // the old "Hide AM" setting
+  $('sigMin').value = localStorage.getItem('wr.sigMin') || '0'; } catch {}
+if (!showKinds.size) showKinds = new Set(KINDS.map(k => k[0]));
+const allKinds = () => showKinds.size === KINDS.length;
+const sigShown = s => showKinds.has(kindOf(s)) && s.snr >= +$('sigMin').value;
+function saveFilters() { try { localStorage.setItem('wr.sigKinds', JSON.stringify([...showKinds])); localStorage.setItem('wr.sigMin', $('sigMin').value); } catch {} }
+$('sigKinds').onclick = e => { const b = e.target.closest('button'); if (!b) return; const k = b.dataset.kind;
+  if (k === 'all') showKinds = new Set(KINDS.map(K => K[0]));
+  else if (allKinds()) showKinds = new Set([k]);                       // first pick: just this kind
+  else { showKinds.has(k) ? showKinds.delete(k) : showKinds.add(k); if (!showKinds.size) showKinds = new Set(KINDS.map(K => K[0])); }
+  saveFilters(); renderSignals(true); updatePins(); };
+$('sigMin').onchange = () => { saveFilters(); renderSignals(true); updatePins(); };
 let sigPress = false, sigHover = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
 // Keep the station you're tuned to in view in the list (not when you just picked it there yourself).
 function revealOn() { if (fromList) { fromList = false; return; } const b = $('sigList').querySelector('button.on'); if (b) b.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
@@ -483,7 +511,12 @@ for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => setT
 function renderSignals(force) {
   if (!sigOn || ((sigPress || sigHover) && !force)) return;   // don't reorder the list under a finger or the pointer
   const now = Date.now(); for (const [k, s] of found) if (now - s.seen > 15 * 60e3) found.delete(k);
-  const hideAM = $('hideAM').checked, all = [...found.values()].filter(s => !hideAM || s.mode !== 'am').sort((a, b) => b.snr - a.snr), counts = new Map();
+  const strong = [...found.values()].filter(s => s.snr >= +$('sigMin').value), kindCount = new Map();
+  for (const s of strong) kindCount.set(kindOf(s), (kindCount.get(kindOf(s)) || 0) + 1);
+  const chips = `<button class="all" data-kind="all" aria-pressed="${allKinds()}">All<small>${strong.length}</small></button>` +
+    KINDS.map(([k, label]) => `<button data-kind="${k}" aria-pressed="${showKinds.has(k)}" title="${allKinds() ? `Show only ${label.toLowerCase()}` : showKinds.has(k) ? `Hide ${label.toLowerCase()}` : `Also show ${label.toLowerCase()}`}">${label}<small>${kindCount.get(k) || 0}</small></button>`).join('');
+  if ($('sigKinds').innerHTML !== chips) $('sigKinds').innerHTML = chips;
+  const all = strong.filter(s => showKinds.has(kindOf(s))).sort((a, b) => b.snr - a.snr), counts = new Map();
   for (const s of all) { const k = s.band.split(' · ')[0] || 'Outside the usual bands'; counts.set(k, (counts.get(k) || 0) + 1); }
   const sel = $('sigBand'), want = sel.value;
   const opts = `<option value="">All bands (${all.length})</option>` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, c]) => `<option value="${k}">${k} (${c})</option>`).join('');
@@ -502,7 +535,10 @@ function renderSignals(force) {
       <span class="st"><b>${s.type} · ${s.mode.toUpperCase()}</b><i>${s.band || 'Outside the usual bands'} · ${(s.width / 1000).toFixed(1)} kHz wide</i></span>
       <span class="mt" title="${s.snr} dB above the noise"><i style="width:${Math.min(100, s.snr * 2.5)}%"></i></span>
       <span class="ag">${s.snr} dB · ${ago(s)}</span></button></li>`).join('')
-    : `<li class="empty">${!liveReady ? 'Nothing yet. Connect to a receiver first.' : hideAM && found.size ? 'Only AM signals so far. Untick Hide AM to see them.' : 'Listening for signals… nothing stands above the noise yet.'}</li>`;
+    : `<li class="empty">${!liveReady && !found.size ? 'Nothing yet. Connect to a receiver first.'
+      : found.size && !allKinds() ? `No ${KINDS.filter(k => showKinds.has(k[0])).map(k => k[1].toLowerCase()).join(' or ')} heard yet${+$('sigMin').value ? ' at this strength' : ''}. Scan all bands to look further, or tap All.`
+      : found.size ? 'Nothing this strong yet. Lower the minimum strength to see fainter signals.'
+      : 'Listening for signals… nothing stands above the noise yet.'}</li>`;
   if (html === sigHtml) return;
   const fk = document.activeElement && document.activeElement.closest && document.activeElement.closest('#sigList button') ? document.activeElement.dataset.k : null;
   sigHtml = html; $('sigList').innerHTML = html; updatePins();
@@ -523,8 +559,6 @@ function setView(sig) {
   if (!sig) { showGhost(null); focusTo = 0; } updatePins(); resize();
 }
 $('sigBand').onchange = () => renderSignals(true);
-try { $('hideAM').checked = localStorage.getItem('wr.hideAM') === '1'; } catch {}
-$('hideAM').onchange = () => { try { localStorage.setItem('wr.hideAM', $('hideAM').checked ? '1' : '0'); } catch {} renderSignals(true); };
 $('viewWf').onclick = () => setView(false); $('viewSig').onclick = () => setView(true);
 // Only re-detect when new rows came in: otherwise old rows would keep being reported as heard "now".
 setInterval(() => {
