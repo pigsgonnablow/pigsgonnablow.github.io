@@ -263,32 +263,44 @@ canvas.addEventListener('pointerup', e => {
 });
 document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => setTune(st.tune + b.dataset.step * 1000));
 $('freq').addEventListener('change', () => { const v = parseFloat($('freq').value); if (v > 0) setTune(v * 1000); });
-addEventListener('keydown', e => { if (e.target.matches('input,select')) return;
+addEventListener('keydown', e => { if (e.target.matches('input:not([type=checkbox]):not([type=radio]),select,textarea')) return;
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setTune(st.tune + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1000 : 100)); } });
 
 /* ---------- audio out ---------- */
-let ctx = null, gain = null, nextT = 0;
+let ctx = null, gain = null, nextT = 0, queued = [], lastSkip = 0;
 function ensureAudio() {
   if (ctx) return;
   ctx = new AudioContext(); gain = ctx.createGain(); gain.gain.value = +$('vol').value; gain.connect(ctx.destination);
   nextT = ctx.currentTime + .1;
+  // The system can pause audio on its own (a phone call, Siri, sleep): say so instead of showing "Stop" over silence.
+  ctx.onstatechange = () => { if (listening && ctx.state !== 'running') { setListening(false); flushAudio();
+    status('Audio was paused by your device. Press Listen to carry on.', true); } };
 }
+// Drop audio that is queued but not yet heard: used when switching receiver or mode and on Stop,
+// so you never hear the old station, or a stale second of it when you press Listen again.
+function flushAudio() { for (const q of queued) try { q.stop(); } catch {} queued = []; nextT = 0; }
+const LEAD = .25;   // seconds of audio kept queued ahead: enough to ride out network jitter, small enough to tune by ear
 function play(samples, rate) {
   if (!samples.length) return;
-  const now = ctx.currentTime;
-  if (nextT > now + 1.2) return;            // already far ahead (a burst after a stall): drop instead of overlapping
-  if (nextT < now + .05) nextT = now + .15;  // fell behind: restart just ahead of now
+  const now = ctx.currentTime, lead = nextT - now;
+  if (lead > 1.2) return;                      // far ahead (a burst after a stall): drop instead of overlapping
+  // After a burst the queue would otherwise stay long for good (every retune heard a second late): skip a packet
+  // now and then until the lead is back near its target.
+  if (lead > LEAD + .35 && now - lastSkip > .2) { lastSkip = now; return; }
+  if (lead < .03) nextT = now + .1;            // fell behind: restart just ahead of now
   const buf = ctx.createBuffer(1, samples.length, rate); buf.copyToChannel(samples, 0);
   const s = ctx.createBufferSource(); s.buffer = buf; s.connect(gain); s.start(nextT); nextT += samples.length / rate;
+  queued.push(s); s.onended = () => { const i = queued.indexOf(s); if (i >= 0) queued.splice(i, 1); };
 }
 $('vol').oninput = () => gain && (gain.gain.value = +$('vol').value);
 let listening = false;
+function setListening(on) { listening = on; resetIdle();
+  $('power').textContent = on ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', on); $('power').setAttribute('aria-pressed', on); }
 $('power').onclick = async () => {
-  try { ensureAudio(); listening = !listening;
-    if (listening) await ctx.resume(); else await ctx.suspend();
-  } catch (err) { listening = false; const msg = 'Audio could not start in this browser: ' + err.message; status(msg, true); $('what').textContent = msg; }
-  resetIdle();
-  $('power').textContent = listening ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', listening); $('power').setAttribute('aria-pressed', listening);
+  try { ensureAudio(); const on = !listening;
+    if (!on) { setListening(false); flushAudio(); await ctx.suspend(); }
+    else { flushAudio(); setListening(true); await ctx.resume(); }
+  } catch (err) { setListening(false); const msg = 'Audio could not start in this browser: ' + err.message; status(msg, true); $('what').textContent = msg; }
 };
 
 /* ---------- signal finder ---------- */
@@ -305,12 +317,12 @@ const BANDS = [ // [low Hz, high Hz, name, kind]
 const FT8 = [1840, 3573, 5357, 7074, 10136, 14074, 18100, 21074, 24915, 28074];        // dial frequencies, kHz
 const TIME = [2500e3, 3330e3, 5000e3, 7850e3, 10000e3, 14670e3, 15000e3, 20000e3];     // WWV/WWVH/CHU and friends
 const bandsAt = f => BANDS.filter(b => f >= b[0] && f <= b[1]);
-const det = { rows: [], lo: 0, hi: 0, skip: 0 }, found = new Map();
+const det = { rows: [], lo: 0, hi: 0, skip: 0, fresh: 0 }, found = new Map();
 let sigOn = false, scan = null, sigKey = 0;
 function detAdd(row) {
   if (det.lo !== st.lo || det.hi !== st.hi) { if (sigOn || scan) detFinalize(); det.rows = []; det.lo = st.lo; det.hi = st.hi; det.skip = wfTrust ? 0 : 4; }
   if (det.skip > 0) { det.skip--; return; }      // rows still in flight from the previous span
-  det.rows.push(row.slice()); if (det.rows.length > 120) det.rows.shift();
+  det.rows.push(row.slice()); det.fresh++; if (det.rows.length > 120) det.rows.shift();
 }
 const CWSEG = [[1800e3, 1840e3], [3500e3, 3570e3], [7000e3, 7040e3], [10100e3, 10150e3], [14000e3, 14070e3],
   [18068e3, 18095e3], [21000e3, 21070e3], [24890e3, 24915e3], [28000e3, 28070e3]];   // Morse ends of the ham bands
@@ -437,7 +449,9 @@ $('sigBand').onchange = () => renderSignals(true);
 try { $('hideAM').checked = localStorage.getItem('wr.hideAM') === '1'; } catch {}
 $('hideAM').onchange = () => { try { localStorage.setItem('wr.hideAM', $('hideAM').checked ? '1' : '0'); } catch {} renderSignals(true); };
 $('viewWf').onclick = () => setView(false); $('viewSig').onclick = () => setView(true);
-setInterval(() => { if (sigOn || scan) { if (!scan) detFinalize(); renderSignals(); } }, 2000);
+// Only re-detect when new rows came in: otherwise old rows would keep being reported as heard "now".
+setInterval(() => { if (sigOn || scan) { if (!scan && det.fresh) { det.fresh = 0; detFinalize(); } renderSignals(); } }, 2000);
+function detReset() { det.rows = []; det.lo = det.hi = 0; det.fresh = 0; }
 // Band scan (live only): step the waterfall across every broadcast and ham band; audio stays where it is.
 function scanPlan() {
   const span = kiwiBw / 2 ** ZOOM, cfs = [];
@@ -492,6 +506,19 @@ async function loadDir() {
     await new Promise(r => setTimeout(r, 4000));
   }
 }
+// Keep slot counts fresh while the page stays open: re-read the list every 10 minutes when the tab is visible,
+// keeping the selected and connected receivers (matched by address).
+setInterval(async () => {
+  if (dirMode !== 'server' || document.hidden) return;
+  try { const d = await (await fetch(API + '/api/receivers', { cache: 'no-store', signal: AbortSignal.timeout(15000) })).json();
+    if (!d || !Array.isArray(d.receivers) || !d.receivers.length) return;
+    const keep = r => r && (d.receivers.find(x => x.origin === r.origin) || r);
+    selected = keep(selected); current = keep(current); RX = d.receivers;
+    const mins = d.updated ? Math.round((Date.now() - Date.parse(d.updated)) / 60000) : null;
+    $('dirNote').textContent = `${RX.length} public receivers` + (mins !== null ? ` · list updated ${mins < 2 ? 'just now' : mins + ' min ago'}` : '');
+    gDirty = true; renderList(); if (selected) select(selected);
+  } catch {}
+}, 10 * 60e3);
 const covers = r => r.lo <= st.tune && st.tune <= r.hi;
 const free = r => Math.max(0, r.max - r.users);
 const usable = r => !r.offline && r.lat !== null && r.lon !== null && Number.isFinite(+r.lat) && Number.isFinite(+r.lon);
@@ -503,7 +530,7 @@ function ranked() {
   else list.sort((a, b) => ((b.snr ?? 10) + 3 * Math.min(free(b), 3)) - ((a.snr ?? 10) + 3 * Math.min(free(a), 3)));
   return list;
 }
-let listTimer = null;
+let listTimer = null, nearTimer = null;
 let rxHtml = '', rxPress = false;
 $('rxList').addEventListener('pointerdown', () => { rxPress = true; });
 for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => setTimeout(() => { rxPress = false; }, 50));
@@ -519,7 +546,7 @@ function renderList(force) {
 }
 function select(r, fly) {
   if (retryTimer && r !== current) disconnect(`Stopped reconnecting to ${current ? current.name : 'the receiver'}.`);
-  selected = r; gDirty = true; renderList(true); if (!r) { $('rxCard').hidden = true; return; }
+  selected = r; connectBtn(); gDirty = true; renderList(true); if (!r) { $('rxCard').hidden = true; return; }
   $('rxCard').hidden = false; $('rxName').textContent = r.name;
   $('rxMeta').textContent = [r.loc, `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
     `${(r.lo / 1e6).toFixed(1)}–${(r.hi / 1e6).toFixed(1)} MHz`].filter(Boolean).join(' · ');
@@ -572,7 +599,7 @@ function initGlobe() {
   gCtl = new OrbitControls(gCam, cv); gCtl.enablePan = false; gCtl.enableDamping = true; gCtl.minDistance = 1.06; gCtl.maxDistance = 5;
   gCtl.rotateSpeed = .5; gCtl.autoRotate = true; gCtl.autoRotateSpeed = .35;
   gCtl.addEventListener('start', () => { gCtl.autoRotate = false; flight = null; });
-  gCtl.addEventListener('change', () => { if ($('sort').value === 'near') { clearTimeout(listTimer); listTimer = setTimeout(renderList, 200); } });
+  gCtl.addEventListener('change', () => { if ($('sort').value === 'near' && !nearTimer) nearTimer = setTimeout(() => { nearTimer = null; renderList(); }, 500); });   // throttled: the globe turns every frame
   gScene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), new THREE.ShaderMaterial({
     vertexShader: `varying vec3 vN,vV;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
     fragmentShader: `varying vec3 vN,vV;void main(){float f=1.-max(dot(vN,vV),0.);float l=max(dot(vN,normalize(vec3(.4,.6,.7))),0.);
@@ -636,16 +663,20 @@ function loadHiCoast() {
   }).catch(() => { coastHi = 'failed'; });
 }
 const COL = { free: new THREE.Color(0x2fb8a8), last: new THREE.Color(0xf2d14b), full: new THREE.Color(0xff7a59), off: new THREE.Color(0x3b5566) };
+// Write into the existing GPU buffer when the size is unchanged; otherwise free the old buffers before replacing them.
+function putAttr(g, name, arr, k) { const a = g.getAttribute(name);
+  if (a && a.array.length === arr.length) { a.array.set(arr); a.needsUpdate = true; return; }
+  if (a) g.dispose(); g.setAttribute(name, new THREE.BufferAttribute(arr, k)); }
 function rebuildPoints() {
   gDirty = false; const list = RX.filter(usable), n = list.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), size = new Float32Array(n);
   list.forEach((r, i) => { ll(r.lat, r.lon, 1.01).toArray(pos, i * 3);
     const c = !covers(r) ? COL.off : free(r) === 0 ? COL.full : free(r) === 1 ? COL.last : COL.free; c.toArray(col, i * 3);
     size[i] = !covers(r) || ($('freeOnly').checked && free(r) === 0) ? 4 : 7; });
-  const g = gPts.geometry; g.setAttribute('position', new THREE.BufferAttribute(pos, 3)); g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
-  g.setAttribute('aSize', new THREE.BufferAttribute(size, 1)); g.computeBoundingSphere(); gPts.userData.list = list;
+  const g = gPts.geometry; putAttr(g, 'position', pos, 3); putAttr(g, 'aColor', col, 3); putAttr(g, 'aSize', size, 1);
+  g.computeBoundingSphere(); gPts.userData.list = list;
   const s = gSel.geometry;
-  if (selected && usable(selected)) { s.setAttribute('position', new THREE.BufferAttribute(ll(selected.lat, selected.lon, 1.012).toArray(new Float32Array(3)), 3));
-    s.setAttribute('aColor', new THREE.BufferAttribute(new Float32Array([1, .97, .88]), 3)); s.setAttribute('aSize', new THREE.BufferAttribute(new Float32Array([18]), 1)); gSel.visible = true; }
+  if (selected && usable(selected)) { putAttr(s, 'position', ll(selected.lat, selected.lon, 1.012).toArray(new Float32Array(3)), 3);
+    putAttr(s, 'aColor', new Float32Array([1, .97, .88]), 3); putAttr(s, 'aSize', new Float32Array([18]), 1); gSel.visible = true; }
   else gSel.visible = false;
 }
 function flyTo(lat, lon) { if (!gCam) return; gCtl.autoRotate = false; zoomAnim = null;
@@ -690,13 +721,18 @@ function kiwiCenter() {
 // the receiver's owner may still set their own time limits.
 function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
   idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
-function kiwiClose() { if (scan) { clearTimeout(scan.timer); scan = null; }
+function kiwiClose() { if (scan) { clearTimeout(scan.timer); scan = null; } detReset(); flushAudio();
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
-  $('connect').textContent = 'Connect'; $('connectHost').textContent = 'Connect'; }
+  $('connectHost').textContent = 'Connect'; connectBtn(); }
+// The main button always says what pressing it will do.
+let checking = false;
+function connectBtn() {
+  $('connect').textContent = checking ? 'Cancel' : retryTimer ? 'Stop reconnecting'
+    : snd ? (selected && current && selected !== current ? 'Switch to this receiver' : 'Disconnect') : 'Connect'; }
 // Ends the session and cancels any connection still being set up (slot checks in flight, fallbacks).
-function disconnect(msg) { connectSeq++; clearTimeout(retryTimer); retryTimer = null; kiwiClose(); current = null; if (msg) status(msg); }
+function disconnect(msg) { connectSeq++; checking = false; clearTimeout(retryTimer); retryTimer = null; kiwiClose(); current = null; connectBtn(); if (msg) status(msg); }
 // A session that has ended for good (the receiver said why, gave up reconnecting, time limit): nothing is live any more.
-function endSession(msg) { clearTimeout(retryTimer); retryTimer = null; kiwiClose(); current = null; status(msg, true); }
+function endSession(msg) { clearTimeout(retryTimer); retryTimer = null; kiwiClose(); current = null; connectBtn(); status(msg, true); }
 // If the receiver you picked can't take you, move to the closest free one and say so plainly.
 function tryNext(why, from) {
   const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0);
@@ -718,10 +754,15 @@ async function connectRx(rx, auto, origFrom) {
   const viaRelay = listed && location.protocol === 'https:' && rx.origin.startsWith('http:');
   if (listed) { status(`${fallbackNote ? fallbackNote + ' ' : ''}Checking ${rx.name}…`);
     // The slot check is advisory: if it can't get an answer, still try the receiver itself.
-    try { const s = await (await fetch(`${API}/api/status?url=${encodeURIComponent(rx.origin)}`)).json();
+    checking = true; connectBtn();
+    try { const s = await (await fetch(`${API}/api/status?url=${encodeURIComponent(rx.origin)}`, { signal: AbortSignal.timeout(7000) })).json();
       if (seq !== connectSeq) return;
-      if (!s.error && (s.offline || (s.max && s.users >= s.max))) { rx.users = s.users; gDirty = true; return tryNext(`${rx.name} is full right now.`, from); }
-    } catch {} }
+      checking = false;
+      if (!s.error) { rx.users = s.users; if (s.max) rx.max = s.max; gDirty = true; if (selected === rx) select(rx); }
+      if (!s.error && (s.offline || (s.max && s.users >= s.max))) return tryNext(`${rx.name} is full right now.`, from);
+    } catch {}
+    if (seq !== connectSeq) return;
+    checking = false; connectBtn(); }
   if (seq !== connectSeq) return;   // cancelled, or another receiver was picked meanwhile
   ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
 }
@@ -752,8 +793,8 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     kiwiClose();
     if (n > RETRY_MS.length) return endSession(`${why} Couldn't reconnect to ${name}. Pick it again or try another.`);
     status(`${why} Reconnecting to ${name} (try ${n} of ${RETRY_MS.length})…`, true);
-    $('connect').textContent = 'Stop reconnecting';
     retryTimer = setTimeout(() => { retryTimer = null; if (seq === connectSeq) kiwiOpen(origin, viaRelay, from, n); }, RETRY_MS[n - 1]);
+    connectBtn();
   };
   const fail = why => { if (live || failed) return; failed = true; clearTimeout(guard);
     if (retry && !ended) return reconnect('The connection dropped.', retry + 1);   // still trying to get back on the same receiver
@@ -780,7 +821,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     if (drops.length > 3) return endSession(`${name} keeps dropping the connection. Try another receiver.`);
     reconnect('The connection dropped.', 1);                                          // network blip, server restart, phone sleep…
   };
-  F.onclose = () => { if (F !== wf) return; wf = null; renderSignals();
+  F.onclose = () => { if (F !== wf) return; wf = null; detReset(); renderSignals();
     if (live) status('The receiver stopped sending its waterfall; audio continues.', true); };   // before live: the audio socket decides
   guard = setTimeout(() => { if (S === snd) fail("didn't answer."); }, 8000);
   S.onmessage = e => { if (S !== snd || typeof e.data === 'string') return; ka(S); const tag = new TextDecoder().decode(e.data.slice(0, 3));
@@ -818,9 +859,13 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
       for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
       pushRow(r); } };
   keep = setInterval(() => { for (const w of [snd, wf]) if (w) ka(w); }, 5000);
-  $('connect').textContent = $('connectHost').textContent = 'Disconnect'; resetIdle(); if (!retry) status('Connecting…');
+  $('connectHost').textContent = 'Disconnect'; connectBtn(); resetIdle(); if (!retry) status('Connecting…');
 }
-$('connect').onclick = () => { if (snd || retryTimer) return disconnect('Disconnected.'); if (selected) connectRx(selected, false); };
+$('connect').onclick = () => {
+  if (checking) return disconnect('Cancelled.');
+  if (snd && selected && current && selected !== current) return connectRx(selected, false);   // switch receivers
+  if (snd || retryTimer) return disconnect('Disconnected.');
+  if (selected) connectRx(selected, false); };
 $('connectHost').onclick = () => {
   if (snd) return disconnect('Disconnected.');
   const raw = $('host').value.trim(); const m = /^(?:(wss?|https?):\/\/)?([^/:\s]+)(?::(\d+))?/i.exec(raw);
@@ -830,7 +875,7 @@ $('connectHost').onclick = () => {
   if (known) { select(known, true); return connectRx(known, false); }
   connectSeq++; current = null; ensureAudio(); kiwiOpen(origin, false, null);
 };
-$('mode').onchange = kiwiTune;
+$('mode').onchange = () => { flushAudio(); kiwiTune(); };
 initGlobe(); loadDir();
 
 /* ---------- loop ---------- */
