@@ -267,29 +267,44 @@ addEventListener('keydown', e => { if (e.target.matches('input:not([type=checkbo
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setTune(st.tune + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1000 : 100)); } });
 
 /* ---------- audio out ---------- */
-let ctx = null, gain = null, nextT = 0, queued = [], lastSkip = 0;
+let ctx = null, gain = null, nextT = 0, queued = [], audioBusy = 0, clk = null, rebuilt = [], clockWarned = false;
 function ensureAudio() {
   if (ctx) return;
   ctx = new AudioContext(); gain = ctx.createGain(); gain.gain.value = +$('vol').value; gain.connect(ctx.destination);
   nextT = ctx.currentTime + .1;
   // The system can pause audio on its own (a phone call, Siri, sleep): say so instead of showing "Stop" over silence.
-  ctx.onstatechange = () => { if (listening && ctx.state !== 'running') { setListening(false); flushAudio();
+  ctx.onstatechange = () => { if (!audioBusy && listening && ctx.state !== 'running') {   // ignore our own Stop/Listen setListening(false); flushAudio();
     status('Audio was paused by your device. Press Listen to carry on.', true); } };
 }
 // Drop audio that is queued but not yet heard: used when switching receiver or mode and on Stop,
 // so you never hear the old station, or a stale second of it when you press Listen again.
-function flushAudio() { for (const q of queued) try { q.stop(); } catch {} queued = []; nextT = 0; }
+function flushAudio(keepClock) { for (const q of queued) try { q.stop(); } catch {} queued = []; nextT = 0; if (!keepClock) clk = null; }
+// Watchdog: the audio clock should keep pace with the wall clock. On some machines a long-lived context falls behind
+// (seen at 2/3 speed, likely after the output device changed): audio then arrives faster than it can play and most of
+// it is thrown away. A fresh context fixes it; if it keeps happening, say so rather than skip silently.
+function watchClock(now) {
+  const w = performance.now() / 1000;
+  if (!clk || now < clk.a) { clk = { w, a: now }; return; }
+  if (w - clk.w < 8) return;
+  const ratio = (now - clk.a) / (w - clk.w); clk = { w, a: now };
+  if (ratio > .9 || ctx.state !== 'running') return;
+  rebuilt = rebuilt.filter(t => w - t < 600);
+  if (rebuilt.length >= 2) { if (!clockWarned) { clockWarned = true;
+    status(`Your device is playing audio at ${Math.round(ratio * 100)}% speed, so sound will skip. Try another audio output, or reload the page.`, true); } return; }
+  rebuilt.push(w); console.warn(`[audio] clock at ${ratio.toFixed(2)}× real time: starting a fresh audio context`);
+  const old = ctx; flushAudio(); old.onstatechange = null; ctx = null; ensureAudio(); ctx.resume().catch(() => {}); old.close().catch(() => {});
+}
 const LEAD = .25;   // seconds of audio kept queued ahead: enough to ride out network jitter, small enough to tune by ear
 function play(samples, rate) {
   if (!samples.length) return;
+  watchClock(ctx.currentTime); if (!ctx) return;
   const now = ctx.currentTime, lead = nextT - now;
-  if (lead > 1.2) return;                      // far ahead (a burst after a stall): drop instead of overlapping
-  // After a burst the queue would otherwise stay long for good (every retune heard a second late): skip a packet
-  // now and then until the lead is back near its target.
-  if (lead > LEAD + .35 && now - lastSkip > .2) { lastSkip = now; return; }
-  if (lead < .03) nextT = now + .1;            // fell behind: restart just ahead of now
+  if (lead > 1) flushAudio(true);              // far behind live after a stall: one clean cut back to now (keeps the watchdog's measurement)
+  if (nextT - now < .03) nextT = now + .1;     // nothing queued (or fell behind): restart just ahead of now
+  // A longer queue than needed drains by playing 4% fast (barely audible) instead of skipping bits of audio.
+  const speed = nextT - now > LEAD + .2 ? 1.04 : 1;
   const buf = ctx.createBuffer(1, samples.length, rate); buf.copyToChannel(samples, 0);
-  const s = ctx.createBufferSource(); s.buffer = buf; s.connect(gain); s.start(nextT); nextT += samples.length / rate;
+  const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = speed; s.connect(gain); s.start(nextT); nextT += samples.length / rate / speed;
   queued.push(s); s.onended = () => { const i = queued.indexOf(s); if (i >= 0) queued.splice(i, 1); };
 }
 $('vol').oninput = () => gain && (gain.gain.value = +$('vol').value);
@@ -297,10 +312,12 @@ let listening = false;
 function setListening(on) { listening = on; resetIdle();
   $('power').textContent = on ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', on); $('power').setAttribute('aria-pressed', on); }
 $('power').onclick = async () => {
+  audioBusy++;
   try { ensureAudio(); const on = !listening;
     if (!on) { setListening(false); flushAudio(); await ctx.suspend(); }
     else { flushAudio(); setListening(true); await ctx.resume(); }
   } catch (err) { setListening(false); const msg = 'Audio could not start in this browser: ' + err.message; status(msg, true); $('what').textContent = msg; }
+  finally { audioBusy--; }
 };
 
 /* ---------- signal finder ---------- */
@@ -516,7 +533,7 @@ setInterval(async () => {
     selected = keep(selected); current = keep(current); RX = d.receivers;
     const mins = d.updated ? Math.round((Date.now() - Date.parse(d.updated)) / 60000) : null;
     $('dirNote').textContent = `${RX.length} public receivers` + (mins !== null ? ` · list updated ${mins < 2 ? 'just now' : mins + ' min ago'}` : '');
-    gDirty = true; renderList(); if (selected) select(selected);
+    gDirty = true; renderList(); if (selected) select(selected, false, true);   // refresh the card only
   } catch {}
 }, 10 * 60e3);
 const covers = r => r.lo <= st.tune && st.tune <= r.hi;
@@ -544,8 +561,8 @@ function renderList(force) {
   $('rxList').onclick = e => { const b = e.target.closest('button'); if (b) select(list[+b.dataset.i], true); };
   if (html !== rxHtml) { rxHtml = html; $('rxList').innerHTML = html; }   // only touch the list when it actually changed
 }
-function select(r, fly) {
-  if (retryTimer && r !== current) disconnect(`Stopped reconnecting to ${current ? current.name : 'the receiver'}.`);
+function select(r, fly, quiet) {
+  if (!quiet && retryTimer && r !== current) disconnect(`Stopped reconnecting to ${current ? current.name : 'the receiver'}.`);
   selected = r; connectBtn(); gDirty = true; renderList(true); if (!r) { $('rxCard').hidden = true; return; }
   $('rxCard').hidden = false; $('rxName').textContent = r.name;
   $('rxMeta').textContent = [r.loc, `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
@@ -678,6 +695,7 @@ function rebuildPoints() {
   if (selected && usable(selected)) { putAttr(s, 'position', ll(selected.lat, selected.lon, 1.012).toArray(new Float32Array(3)), 3);
     putAttr(s, 'aColor', new Float32Array([1, .97, .88]), 3); putAttr(s, 'aSize', new Float32Array([18]), 1); gSel.visible = true; }
   else gSel.visible = false;
+  if (gSel.visible) s.computeBoundingSphere();   // the ring moves: keep three.js from culling it at the old spot
 }
 function flyTo(lat, lon) { if (!gCam) return; gCtl.autoRotate = false; zoomAnim = null;
   const d = gCam.position.length(); flight = { from: gCam.position.clone().normalize(), to: ll(lat, lon), t0: performance.now(), d0: d, d1: Math.min(d, 2.2) }; }   // fly to it and come in a little
@@ -738,15 +756,15 @@ function tryNext(why, from) {
   const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0);
   if (from && usable(from)) pool.sort((a, b) => (usable(a) ? gcKm(from, a) : 1e9) - (usable(b) ? gcKm(from, b) : 1e9));
   const next = pool[0];
-  if (tried.size >= 3 || !next) { current = null; return status(`${why} No nearby receiver answered either; pick another one.`, true); }
+  if (tried.size >= 3 || !next) { if (!snd) current = null; connectBtn(); return status(`${why} No nearby receiver answered either; pick another one.`, true); }
   const km = from && usable(from) && usable(next) ? ` (${Math.round(gcKm(from, next)).toLocaleString()} km away)` : '';
   fallbackNote = `${why} Switched to the nearest free receiver${km}.`;
   status(`${why} Trying the nearest free one instead: ${next.name}${km}…`); select(next, true); connectRx(next, true, from);
 }
 let connectSeq = 0;
 async function connectRx(rx, auto, origFrom) {
-  const seq = ++connectSeq;
-  if (!auto) { tried = new Set(); fallbackNote = ''; drops = []; } tried.add(rx.origin); current = rx; const from = origFrom || rx;
+  const seq = ++connectSeq; checking = false;
+  if (!auto) { tried = new Set(); fallbackNote = ''; drops = []; } tried.add(rx.origin); const from = origFrom || rx;   // `current` changes only once the switch really happens
   if (!covers(rx)) setTune(Math.min(Math.max(st.tune, rx.lo + 5000), rx.hi - 5000), true);
   const listed = dirMode === 'server' && RX.some(r => r.origin === rx.origin);
   // Use the relay only when the browser can't connect itself: an https page can't open a plain ws:// receiver.
@@ -758,13 +776,13 @@ async function connectRx(rx, auto, origFrom) {
     try { const s = await (await fetch(`${API}/api/status?url=${encodeURIComponent(rx.origin)}`, { signal: AbortSignal.timeout(7000) })).json();
       if (seq !== connectSeq) return;
       checking = false;
-      if (!s.error) { rx.users = s.users; if (s.max) rx.max = s.max; gDirty = true; if (selected === rx) select(rx); }
+      if (!s.error) { rx.users = s.users; if (s.max) rx.max = s.max; gDirty = true; if (selected === rx) select(rx, false, true); }
       if (!s.error && (s.offline || (s.max && s.users >= s.max))) return tryNext(`${rx.name} is full right now.`, from);
     } catch {}
     if (seq !== connectSeq) return;
     checking = false; connectBtn(); }
   if (seq !== connectSeq) return;   // cancelled, or another receiver was picked meanwhile
-  ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
+  current = rx; ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
 }
 // Messages a receiver sends just before refusing or ending a session (as handled by the official kiwiclient).
 const BADP = { 1: 'needs a password (or its password-free slots are all taken).', 2: 'is still starting up. Try again in a moment.',
@@ -781,8 +799,10 @@ function endedBy(m, viaRelay) {
 const RETRY_MS = [2000, 6000, 15000, 30000];   // ~50 s in all: long enough to ride out a server restart
 let drops = [], retryTimer = null;                                  // times of recent unexpected drops, to stop retrying a receiver that keeps dropping
 // retry: 0 for a fresh connection, 1..3 when reconnecting after an unexpected drop (same receiver, frequency and mode).
+let session = null;   // identity of the live session (kept across its own reconnects)
 function kiwiOpen(origin, viaRelay, from, retry = 0) {
-  kiwiClose(); kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
+  if (!retry) { clearTimeout(retryTimer); retryTimer = null; }   // a new session replaces any pending reconnect
+  kiwiClose(); const me = session = {}; kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
   if (!retry) found.clear();   // a new receiver hears a different band; a reconnect keeps what was found
   const seq = connectSeq, ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), name = current ? current.name : 'The receiver';
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(`${wsBase}/kiwi/${ts}/${s}`)}` : `${wsBase}/kiwi/${ts}/${s}`;
@@ -793,7 +813,9 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     kiwiClose();
     if (n > RETRY_MS.length) return endSession(`${why} Couldn't reconnect to ${name}. Pick it again or try another.`);
     status(`${why} Reconnecting to ${name} (try ${n} of ${RETRY_MS.length})…`, true);
-    retryTimer = setTimeout(() => { retryTimer = null; if (seq === connectSeq) kiwiOpen(origin, viaRelay, from, n); }, RETRY_MS[n - 1]);
+    // Keyed to the session, not to connectSeq: a slot check for another receiver must not stop this from reconnecting,
+    // and a new session (or Disconnect) clears the timer.
+    retryTimer = setTimeout(() => { retryTimer = null; if (session === me) kiwiOpen(origin, viaRelay, from, n); else connectBtn(); }, RETRY_MS[n - 1]);
     connectBtn();
   };
   const fail = why => { if (live || failed) return; failed = true; clearTimeout(guard);
@@ -862,6 +884,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
   $('connectHost').textContent = 'Disconnect'; connectBtn(); resetIdle(); if (!retry) status('Connecting…');
 }
 $('connect').onclick = () => {
+  if (checking && snd) { connectSeq++; checking = false; connectBtn(); return status(`Stayed on ${current ? current.name : 'this receiver'}.`); }   // cancel a switch, keep listening
   if (checking) return disconnect('Cancelled.');
   if (snd && selected && current && selected !== current) return connectRx(selected, false);   // switch receivers
   if (snd || retryTimer) return disconnect('Disconnected.');
@@ -873,7 +896,7 @@ $('connectHost').onclick = () => {
   const proto = /^(wss|https)$/i.test(m[1] || '') ? 'https' : 'http', origin = `${proto}://${m[2].toLowerCase()}:${m[3] || (proto === 'https' ? 443 : 80)}`;
   const known = RX.find(r => r.origin === origin);
   if (known) { select(known, true); return connectRx(known, false); }
-  connectSeq++; current = null; ensureAudio(); kiwiOpen(origin, false, null);
+  connectSeq++; checking = false; current = null; ensureAudio(); kiwiOpen(origin, false, null);
 };
 $('mode').onchange = () => { flushAudio(); kiwiTune(); };
 initGlobe(); loadDir();
