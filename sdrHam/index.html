@@ -267,10 +267,13 @@ addEventListener('keydown', e => { if (e.target.matches('input:not([type=checkbo
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setTune(st.tune + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1000 : 100)); } });
 
 /* ---------- audio out ---------- */
+// Volume never goes fully to zero: some audio drivers power down on pure digital silence and their clock then runs
+// slow (seen at 2/3 speed). 0.001 is about -60 dB, which nobody can hear.
+const volume = () => Math.max(+$('vol').value, .001);
 let ctx = null, gain = null, nextT = 0, queued = [], audioBusy = 0, clk = null, rebuilt = [], clockWarned = false;
 function ensureAudio() {
   if (ctx) return;
-  ctx = new AudioContext(); gain = ctx.createGain(); gain.gain.value = +$('vol').value; gain.connect(ctx.destination);
+  ctx = new AudioContext(); gain = ctx.createGain(); gain.gain.value = volume(); gain.connect(ctx.destination);
   nextT = ctx.currentTime + .1;
   // The system can pause audio on its own (a phone call, Siri, sleep): say so instead of showing "Stop" over silence.
   ctx.onstatechange = () => { if (!audioBusy && listening && ctx.state !== 'running') {   // ignore our own Stop/Listen setListening(false); flushAudio();
@@ -307,7 +310,7 @@ function play(samples, rate) {
   const s = ctx.createBufferSource(); s.buffer = buf; s.playbackRate.value = speed; s.connect(gain); s.start(nextT); nextT += samples.length / rate / speed;
   queued.push(s); s.onended = () => { const i = queued.indexOf(s); if (i >= 0) queued.splice(i, 1); };
 }
-$('vol').oninput = () => gain && (gain.gain.value = +$('vol').value);
+$('vol').oninput = () => gain && (gain.gain.value = volume());
 let listening = false;
 function setListening(on) { listening = on; resetIdle();
   $('power').textContent = on ? '■ Stop' : '▶ Listen'; $('power').classList.toggle('on', on); $('power').setAttribute('aria-pressed', on); }
@@ -315,7 +318,12 @@ $('power').onclick = async () => {
   audioBusy++;
   try { ensureAudio(); const on = !listening;
     if (!on) { setListening(false); flushAudio(); await ctx.suspend(); }
-    else { flushAudio(); setListening(true); await ctx.resume(); }
+    else { flushAudio(); setListening(true);
+      // A browser can block sound (autoplay rules): resume() then never settles and the clock stays still.
+      // Never show "Stop" over silence.
+      await Promise.race([ctx.resume(), new Promise(r => setTimeout(r, 1500))]);
+      if (ctx.state !== 'running') { setListening(false); flushAudio();
+        status('Your browser is blocking sound for this page. Click Listen again (or allow sound for this site).', true); } }
   } catch (err) { setListening(false); const msg = 'Audio could not start in this browser: ' + err.message; status(msg, true); $('what').textContent = msg; }
   finally { audioBusy--; }
 };
