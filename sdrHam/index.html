@@ -90,7 +90,18 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 @media(max-width:600px){.hint{display:none}.span{left:16px;right:auto}}
 .sigs{position:absolute;inset:0;overflow-y:auto;padding:clamp(92px,13vh,118px) max(4vw,16px) 18px;background:radial-gradient(ellipse at 50% 30%,#14293a,#0a1219 70%)}
 .sigs[hidden]{display:none}
-.stage.sigmode .hint,.stage.sigmode .span{display:none}
+.stage.sigmode .hint{display:none}
+/* Signals view: waterfall and station list together. Wide screens: side by side. Phones: waterfall above the list. */
+.stage.sigmode .sigs{left:auto;width:min(46%,620px);padding:16px clamp(12px,2vw,22px) 18px;border-left:1px solid var(--line);background:#0a1219f2}
+.stage.sigmode .span{right:calc(min(46%,620px) + 16px)}
+.stage.sigmode .siglist button{grid-template-columns:6.6em minmax(0,1fr) 4.6em;gap:2px 10px;padding:8px 12px;min-height:48px}
+.stage.sigmode .siglist .mt{display:none}
+@media(max-width:860px){
+  .stage.sigmode{height:calc(250px + min(62vh,560px))}
+  .stage.sigmode canvas{height:250px!important}
+  .stage.sigmode .sigs{top:250px;left:0;width:auto;border-left:0;border-top:1px solid var(--line)}
+  .stage.sigmode .span{right:16px;left:auto;top:220px;bottom:auto}
+}
 .sighead{display:flex;flex-wrap:wrap;gap:10px 16px;align-items:center;justify-content:space-between;margin-bottom:12px}
 .sigctl{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
 .sigctl label{min-height:44px;color:var(--ink)}
@@ -222,6 +233,24 @@ const spec = new THREE.Line(specGeo, new THREE.LineBasicMaterial({ color: 0xffe9
 scene.add(spec);
 const markGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, D / 2), new THREE.Vector3(0, 1.3, D / 2)]);
 const mark = new THREE.Line(markGeo, new THREE.LineBasicMaterial({ color: 0xff7a59 })); scene.add(mark);
+// Stations found by the Signals view, pinned along the front edge of the terrain (teal; the hovered one bright).
+const pins = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x3fd0c9, transparent: true, opacity: .75 }));
+const ghost = new THREE.Mesh(new THREE.BoxGeometry(.07, 2.2, .07), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: .9 }));
+ghost.position.set(0, 1.1, D / 2 + .05); ghost.visible = false;   // a bright post where the hovered station sits
+scene.add(pins, ghost);
+const xOf = hz => -W / 2 + W * (hz - st.lo) / (st.hi - st.lo);
+function updatePins() {
+  const pts = [];
+  for (const s of found.values()) if (s.tune > st.lo && s.tune < st.hi && (!$('hideAM').checked || s.mode !== 'am')) {
+    const x = xOf(s.tune); pts.push(x, 0, D / 2 + .05, x, .45, D / 2 + .05); }
+  const g = pins.geometry; g.dispose(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); pins.visible = sigOn && pts.length > 0;
+}
+function showGhost(hz) { ghost.visible = hz != null && hz > st.lo && hz < st.hi; if (ghost.visible) ghost.position.x = xOf(hz); }
+// Swing the view toward a frequency (used when a station is picked from the list).
+let focusTo = null;
+function focusOn(hz) { if (hz > st.lo && hz < st.hi) focusTo = Math.max(-W * .3, Math.min(W * .3, xOf(hz) * .55)); }
+function stepFocus() { if (focusTo === null) return; const d = (focusTo - controls.target.x) * .12;
+  controls.target.x += d; camera.position.x += d; if (Math.abs(focusTo - controls.target.x) < .002) focusTo = null; }
 
 function pushRow(row) {
   head = (head + 1) % ROWS; texData.set(row, head * BINS); tex.needsUpdate = true; uni.uHead.value = head;
@@ -230,13 +259,19 @@ function pushRow(row) {
   specGeo.attributes.position.needsUpdate = true;
   detAdd(row);
 }
-function resize() { const w = stage.clientWidth, h = stage.clientHeight; renderer.setSize(w, h, false);
+// In the Signals view the waterfall shares the stage with the station list (beside it, or above it on phones).
+function viewSize() {
+  if (!sigOn) return [stage.clientWidth, stage.clientHeight];
+  return innerWidth > 860 ? [stage.clientWidth - $('sigs').offsetWidth, stage.clientHeight] : [stage.clientWidth, 250];
+}
+function resize() { const [w, h] = viewSize(); if (w < 2 || h < 2) return;
+  canvas.style.width = w + 'px'; canvas.style.height = h + 'px'; renderer.setSize(w, h, false);
   camera.aspect = w / h; camera.updateProjectionMatrix();
   const hf = 2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) * camera.aspect);
   const dist = Math.max(9.5, (W / 2 + .4) / Math.tan(hf / 2) + 1.5);
   controls.maxDistance = Math.max(14, dist * 1.3);
   camera.position.sub(controls.target).setLength(dist).add(controls.target); }
-const ro = new ResizeObserver(resize); ro.observe(stage);
+const ro = new ResizeObserver(resize); ro.observe(stage); addEventListener('resize', resize);
 
 /* ---------- tuning + readout ---------- */
 const fmt = hz => { const k = (hz / 1000).toFixed(2); const [a, b] = k.split('.'); return a.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + '.' + b; };
@@ -248,9 +283,10 @@ function setTune(hz, fromLive) {
   uni.uTune.value = x; uni.uLo.value = st.pb[0] / span; uni.uHi.value = st.pb[1] / span;
   mark.position.x = -W / 2 + W * x; mark.visible = x >= 0 && x <= 1;
   if (!fromLive) kiwiTune(); gDirty = true; clearTimeout(listTimer); listTimer = setTimeout(renderList, 150);
+  if (sigOn) { clearTimeout(sigTimer); sigTimer = setTimeout(() => { renderSignals(true); revealOn(); }, 120); }
 }
 const nfmt = hz => fmt(hz).split('.')[0];
-function setSpan(lo, hi, label) { st.lo = lo; st.hi = hi; $('spanLbl').textContent = `${nfmt(lo)} – ${nfmt(hi)} kHz · ${label}`; setTune(st.tune, true); }
+function setSpan(lo, hi, label) { st.lo = lo; st.hi = hi; $('spanLbl').textContent = `${nfmt(lo)} – ${nfmt(hi)} kHz · ${label}`; setTune(st.tune, true); updatePins(); }
 
 let down = null;
 canvas.addEventListener('pointerdown', e => down = [e.clientX, e.clientY]);
@@ -430,7 +466,12 @@ function detFinalize() {
   }
 }
 const fmtK = hz => { const k = hz / 1000; return (k >= 1000 ? k.toFixed(1).replace(/\B(?=(\d{3})+(?!\d))/, ' ') : k.toFixed(1)); };
-let sigPress = false, sigHtml = '', bandHtml = '';
+let sigPress = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
+// Keep the station you're tuned to in view in the list (not when you just picked it there yourself).
+function revealOn() { if (fromList) { fromList = false; return; } const b = $('sigList').querySelector('button.on'); if (b) b.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+$('sigList').addEventListener('pointerover', e => { const b = e.target.closest('button'); const s = b && found.get(+b.dataset.k); showGhost(s ? s.tune : null); });
+$('sigList').addEventListener('pointerleave', () => showGhost(null));
+$('sigList').addEventListener('focusin', e => { const b = e.target.closest('button'); const s = b && found.get(+b.dataset.k); showGhost(s ? s.tune : null); });
 $('sigList').addEventListener('pointerdown', () => { sigPress = true; });
 for (const ev of ['pointerup', 'pointercancel']) addEventListener(ev, () => setTimeout(() => { sigPress = false; }, 50));
 function renderSignals(force) {
@@ -458,17 +499,22 @@ function renderSignals(force) {
     : `<li class="empty">${!liveReady ? 'Nothing yet. Connect to a receiver first.' : hideAM && found.size ? 'Only AM signals so far. Untick Hide AM to see them.' : 'Listening for signals… nothing stands above the noise yet.'}</li>`;
   if (html === sigHtml) return;
   const fk = document.activeElement && document.activeElement.closest && document.activeElement.closest('#sigList button') ? document.activeElement.dataset.k : null;
-  sigHtml = html; $('sigList').innerHTML = html;
+  sigHtml = html; $('sigList').innerHTML = html; updatePins();
   if (fk) { const b = $('sigList').querySelector(`[data-k="${fk}"]`); if (b) b.focus(); }   // keep keyboard focus on the same signal
 }
 $('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) return; const s = found.get(+b.dataset.k); if (!s) return;
   if (scan) endScan();
   if (!snd) return status('Connect to a receiver first.', true);
-  $('mode').value = s.mode;
-  setTune(s.tune); if (!listening) $('power').click(); renderSignals(true); };
+  $('mode').value = s.mode; fromList = true;
+  setTune(s.tune);
+  const x = (s.tune - st.lo) / (st.hi - st.lo);
+  if (x < .25 || x > .75) kiwiCenter();    // outside the middle half: bring it to the middle of the waterfall
+  focusOn(s.tune); showGhost(null);
+  if (!listening) $('power').click(); renderSignals(true); };
 function setView(sig) {
   sigOn = sig; $('viewWf').setAttribute('aria-pressed', !sig); $('viewSig').setAttribute('aria-pressed', sig);
   $('sigs').hidden = !sig; $('stage').classList.toggle('sigmode', sig); if (sig) { detFinalize(); renderSignals(true); }
+  if (!sig) { showGhost(null); focusTo = 0; } updatePins(); resize();
 }
 $('sigBand').onchange = () => renderSignals(true);
 try { $('hideAM').checked = localStorage.getItem('wr.hideAM') === '1'; } catch {}
@@ -938,7 +984,7 @@ initGlobe(); loadDir();
 /* ---------- loop ---------- */
 setTune(st.tune, true);
 renderer.setAnimationLoop(() => {
-  if (!sigOn) { controls.update(); renderer.render(scene, camera); }
+  stepFocus(); controls.update(); renderer.render(scene, camera);
   renderGlobe();
 });
 }
