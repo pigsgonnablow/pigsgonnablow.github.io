@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.6.0" data-date="2026-11-27">
+<meta name="app-version" content="1.6.1" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -49,7 +49,7 @@ header.band{padding-bottom:14px}
 .pct{font-variant-numeric:tabular-nums}@keyframes pulse{50%{opacity:.25}}
 @media(prefers-reduced-motion:reduce){.spin,.busy::before{animation:pulse 1.6s ease-in-out infinite}}
 .loadover{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--ink);font:500 15px "IBM Plex Sans",sans-serif;text-align:center;padding:0 20px;background:#0c151dcc;pointer-events:none;z-index:4}
-.loadover[hidden]{display:none}.loadover span{white-space:pre-line}.loadover .spin{width:44px;height:44px;border-width:4px;color:var(--teal);margin:0}
+.loadover[hidden],.loadover [hidden]{display:none}.loadover .pring{width:44px;height:44px;margin:0;color:var(--teal);-webkit-mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4.5px));mask:radial-gradient(farthest-side,transparent calc(100% - 5px),#000 calc(100% - 4.5px))}.loadover span{white-space:pre-line}.loadover .spin{width:44px;height:44px;border-width:4px;color:var(--teal);margin:0}
 .stage.sigmode .loadover{right:min(46%,620px)}
 @media(max-width:860px){.stage.sigmode .loadover{right:0;bottom:auto;height:250px}}
 .btn.main{background:var(--coral);border-color:var(--coral);color:#1a0d08;min-width:132px}
@@ -168,7 +168,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <ol class="siglist" id="sigList"></ol>
   </div>
   <div class="hud"><div class="dial" id="dial">7 030.00<small>kHz</small></div><div class="what" id="what">Pick a receiver below</div></div>
-  <div class="loadover" id="stageLoad" role="status" hidden><span class="spin"></span><span id="stageLoadText">Connecting…</span></div>
+  <div class="loadover" id="stageLoad" role="status" hidden><span class="spin" id="stageSpin"></span><span class="pring" id="stageRing" hidden></span><span id="stageLoadText">Connecting…</span></div>
   <div class="hint">Drag to orbit · tap a ridge to tune · ← → to nudge</div>
   <div class="span" id="spanLbl">9 533 – 9 767 kHz · not connected</div>
 </div>
@@ -282,7 +282,7 @@ function updatePins() {
   const pts = [];
   for (const s of found.values()) if (s.tune > st.lo && s.tune < st.hi && sigShown(s)) {
     const x = xOf(s.tune); pts.push(x, 0, D / 2 + .05, x, .45, D / 2 + .05); }
-  const g = pins.geometry; g.dispose(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); pins.visible = sigOn && pts.length > 0;
+  const g = pins.geometry; g.dispose(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); pins.visible = sigOn && pts.length > 0 && !scan;
 }
 function showGhost(hz) { ghost.visible = hz != null && hz > st.lo && hz < st.hi; if (ghost.visible) ghost.position.x = xOf(hz); }
 // Swing the view toward a frequency (used when a station is picked from the list).
@@ -292,6 +292,7 @@ function stepFocus() { if (focusTo === null) return; const d = (focusTo - contro
   controls.target.x += d; camera.position.x += d; if (Math.abs(focusTo - controls.target.x) < .002) focusTo = null; }
 
 function pushRow(row) {
+  if (scan) return detAdd(row);   // scanning: the detector reads every band, the terrain stays still until it's done
   head = (head + 1) % ROWS; texData.set(row, head * BINS); tex.needsUpdate = true; uni.uHead.value = head;
   for (let i = 0; i < BINS; i++) { const v = row[i] / 255;
     specPos[i * 3] = -W / 2 + W * (i + .5) / BINS; specPos[i * 3 + 1] = Math.pow(v, 1.6) * H + .02; specPos[i * 3 + 2] = D / 2; }
@@ -733,7 +734,7 @@ function sweepSpots(skip) {
   }
   return out.sort((x, y) => y.m - x.m).slice(0, 30);
 }
-if (/[?&]debug\b/.test(location.search)) window.__wr = { det, found, sweepSpots, st, handsOff: ms => { lastAct = Date.now() - ms; } };   // for tests and troubleshooting
+if (/[?&]debug\b/.test(location.search)) window.__wr = { det, found, sweepSpots, st, handsOff: ms => { lastAct = Date.now() - ms; }, get head() { return head; } };   // for tests and troubleshooting
 async function findVoice() {
   if (hunt) return stopHunt('Stopped listening for voices.');
   huntProg = null;
@@ -800,7 +801,7 @@ function scanPlan() {
   return cfs.sort((a, b) => a - b);
 }
 function wfGoto(cf) { const span = kiwiBw / 2 ** ZOOM;
-  wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); texData.fill(0); tex.needsUpdate = true; setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
+  wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
 const scanIdle = () => { $('scanBtn').textContent = wf ? 'Scan all bands' : 'Scan (live receivers only)'; $('scanBtn').disabled = !wf; };
 function endScan() { if (!scan) return; clearTimeout(scan.timer); scan = null; scanIdle();
   if (wf && wf.readyState === 1) kiwiCenter(); else setSpan(st.lo, st.hi, 'waterfall paused'); renderSignals(); }
@@ -1294,8 +1295,9 @@ function syncBusy() {
   ring('voiceBtn', hp, huntProg && huntProg.weak ? 'Stop · weaker signals' : 'Stop'); ring('scanBtn', sp, 'Stop scan');
   tog('voiceBtn', hunt && hp === null); tog('scanBtn', false); tog('sigNote', scan); tog('dirNote', dirMode === 'loading');
   $('globeLoad').hidden = dirMode !== 'loading'; if (dirWait && $('globeLoadText').textContent !== dirWait) $('globeLoadText').textContent = dirWait;
-  const wait = checking ? 'Checking the receiver has a free slot…' : wfWait;
+  const wait = checking ? 'Checking the receiver has a free slot…' : sp !== null ? `Scanning all bands… ${Math.min(99, Math.floor(sp * 100))}%\nThe waterfall carries on when the scan is done.` : wfWait;
   $('stageLoad').hidden = !wait; if (wait && $('stageLoadText').textContent !== wait) $('stageLoadText').textContent = wait;
+  $('stageSpin').hidden = sp !== null; $('stageRing').hidden = sp === null; if (sp !== null) $('stageRing').style.setProperty('--p', Math.min(99, Math.floor(sp * 100)));
 }
 setInterval(syncBusy, 200); syncBusy();
 // Version: the page's own (stamped by `npm run release`), and the release the server was last deployed with.
