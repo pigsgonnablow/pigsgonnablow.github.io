@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.6.1" data-date="2026-11-27">
+<meta name="app-version" content="1.6.2" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -95,11 +95,6 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 @media(max-width:860px){.picker{grid-template-columns:minmax(0,1fr)}.globeBox{height:320px}}
 .status{font-size:14px;color:var(--mute);margin:10px 0 0;max-width:80ch}
 .status.err{color:var(--coral)}
-.how{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:28px}
-.how h3{font:600 18px "Chakra Petch",sans-serif;margin:0 0 6px;color:var(--teal)}
-.how p{margin:0;color:var(--mute);font-size:15px}
-.note{margin-top:28px;padding-top:18px;border-top:1px solid var(--line);color:var(--mute);font-size:14px;max-width:80ch}
-.note b{color:var(--ink)}
 @media(max-width:600px){.hint{display:none}.span{left:16px;right:auto}}
 .sigs{position:absolute;inset:0;overflow-y:auto;padding:clamp(92px,13vh,118px) max(4vw,16px) 18px;background:radial-gradient(ellipse at 50% 30%,#14293a,#0a1219 70%)}
 .sigs[hidden]{display:none}
@@ -213,16 +208,6 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     </details>
     <p class="status" id="status" role="status" aria-live="polite">Pick a dot on the globe or a receiver from the list. The list only shows receivers that cover the frequency you're tuned to.</p>
   </div>
-</div></section>
-
-<section class="band"><div class="wrap">
-  <h2>What's happening under the hood</h2>
-  <div class="how">
-    <div><h3>1 · Sample</h3><p>An SDR digitises a whole slice of spectrum at once. Each row of the terrain is one FFT of that slice: height and colour are signal strength, and older rows scroll away from you.</p></div>
-    <div><h3>2 · Demodulate</h3><p>Tuning picks a narrow window out of that slice and turns it into sound: AM for broadcasts, SSB for voice, CW for Morse. Digital modes like FT8 and RTTY sound like chirps and warbles.</p></div>
-    <div><h3>3 · Listen</h3><p>The audio is decoded into PCM samples and scheduled through the Web Audio API, which runs in any modern browser. three.js draws the terrain with one shader on the GPU.</p></div>
-  </div>
-  <p class="note">Everything you hear comes live from a real receiver. The globe shows every public KiwiSDR, from a list your server refreshes hourly from the KiwiSDR directory. Picking one checks it still has a free slot, then streams its audio and waterfall, through your server's relay when the browser can't connect directly; if it's full, the nearest free receiver is tried instead. These receivers are run by volunteers with only a few listener slots each, so the page names itself to the receiver and disconnects after 30 idle minutes.</p>
 </div></section>
 
 <footer class="ver"><div class="wrap" id="verLine">Waterfall Radio</div></footer>
