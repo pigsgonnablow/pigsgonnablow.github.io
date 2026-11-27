@@ -41,4 +41,12 @@ window.LMNOP_GAMES = [
     color: "#7a5cc7",
     tags: ["Building", "Strategy", "Desktop"],
   },
+  {
+    title: "Waterfall Radio",
+    tagline: "Spin a globe of real radio receivers, see the airwaves as a 3D landscape, and tune in live anywhere on Earth.",
+    status: "prototype",
+    url: "https://lmnop.games/sdrHam/",
+    color: "#2bb3a3",
+    tags: ["Live radio", "3D"],
+  },
 ];
