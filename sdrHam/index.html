@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.6.2" data-date="2026-11-27">
+<meta name="app-version" content="1.7.0" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -35,6 +35,8 @@ header.band{padding-bottom:14px}
 .span{position:absolute;right:max(4vw,16px);bottom:12px;color:var(--mute);font-size:13px;pointer-events:none}
 .hint{position:absolute;left:max(4vw,16px);bottom:12px;color:var(--mute);font-size:13px;pointer-events:none}
 .deck{background:var(--deck);border-bottom:1px solid var(--line)}
+/* Landing: only the receiver picker. The radio (terrain, signals, controls) appears once a receiver is being connected. */
+body.landing #stage,body.landing #controls,body.landing .onlive,body:not(.landing) .onland{display:none}
 .row{display:flex;flex-wrap:wrap;gap:12px;align-items:center}
 .row+.row{margin-top:14px}
 .btn{min-height:44px;padding:0 18px;border-radius:10px;border:1px solid var(--line);background:#182a38;color:var(--ink);font-size:16px;font-weight:600;cursor:pointer}
@@ -146,10 +148,10 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 </style>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/addons/"}}</script>   <!-- self-hosted: no outside code runs on the page -->
 </head>
-<body>
+<body class="landing">
 <header class="band"><div class="wrap">
   <h1>Waterfall Radio</h1>
-  <p class="sub">The radio band as a 3D landscape. Every ridge is a signal; tap one to tune in and hear it.</p>
+  <p class="sub"><span class="onland">Live radio from receivers around the world. Pick one on the globe or from the list to start listening.</span><span class="onlive">The radio band as a 3D landscape. Every ridge is a signal; tap one to tune in and hear it.</span></p>
 </div></header>
 
 <div class="stage" id="stage">
@@ -169,7 +171,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 </div>
 
 <section class="band deck"><div class="wrap">
-  <div class="row">
+  <div class="row" id="controls">
     <button class="btn main" id="power" aria-pressed="false">▶ Listen</button>
     <div class="seg" role="group" aria-label="View"><button id="viewWf" aria-pressed="true">Waterfall</button><button id="viewSig" aria-pressed="false">Signals</button></div>
     <div class="steps"><button class="btn" data-step="-1">−1k</button><button class="btn" data-step="-0.1">−.1</button><button class="btn" data-step="0.1">+.1</button><button class="btn" data-step="1">+1k</button></div>
@@ -1272,7 +1274,15 @@ function ring(id, frac, label) {   // a progress ring and percentage on a button
   b.querySelector('.pring').style.setProperty('--p', pc); const t = pc + '%'; if (b.querySelector('.pct').textContent !== t) b.querySelector('.pct').textContent = t;
   b.setAttribute('aria-label', `${label}, ${pc}% done`);
 }
+// Show the radio only while there's a receiver session (connecting, live or reconnecting); otherwise just the picker.
+let landing = true;
+function syncLanding() {
+  const want = !(snd || checking || wfWait); if (want === landing) return;
+  landing = want; document.body.classList.toggle('landing', want);
+  if (!want) requestAnimationFrame(() => { scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); });
+}
 function syncBusy() {
+  syncLanding();
   const tog = (id, on) => $(id).classList.toggle('busy', !!on);
   // Real progress only: a spot takes a fixed ~5.7 s to listen to; a scan step ends after 12 waterfall rows or 6 s.
   const hp = hunt && huntProg ? (huntMax = Math.max(huntMax, (huntProg.done + Math.min(1, (performance.now() - huntProg.t0) / 5700)) / huntProg.total)) : null;
