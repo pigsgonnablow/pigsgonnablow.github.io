@@ -32,4 +32,13 @@ window.LMNOP_GAMES = [
     color: "#5aa469",
     tags: ["Sandbox", "3D", "Desktop"],
   },
+  {
+    title: "Driftspan",
+    tagline: "Lay bridges between drifting islands, gather wood and stone, and raise temples to claim new land.",
+    status: "prototype",
+    url: "https://lmnop.games/driftspan/",
+    image: "assets/games/driftspan.jpg",
+    color: "#7a5cc7",
+    tags: ["Building", "Strategy", "Desktop"],
+  },
 ];

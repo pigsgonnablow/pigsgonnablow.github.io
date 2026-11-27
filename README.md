@@ -22,6 +22,19 @@ A visit to a page that doesn't exist shows `404.html`.
 
 The filter buttons appear on their own once there are games in more than one status.
 
+## Update a game that lives in this repo
+
+Some games live in their own folder here instead of their own repo (`sdrHam/`, `driftspan/`). The folder's `index.html` is the whole game.
+
+Driftspan is one file. To update it, replace `driftspan/index.html` with the new `driftspan.html` and push to `main`:
+
+```sh
+cp path/to/driftspan.html driftspan/index.html
+git add driftspan/index.html && git commit -m "Driftspan: <what changed>" && git push
+```
+
+It's live at https://lmnop.games/driftspan/ a minute or two later. If the old version still shows, do a hard refresh (Ctrl+Shift+R, or Cmd+Shift+R on a Mac).
+
 ## Hosting
 
 - This repo is named pigsgonnablow.github.io, so it is the account's main site: any other repo with Pages turned on shows up at lmnop.games/<repo-name>.
