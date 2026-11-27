@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.8.0" data-date="2026-11-27">
+<meta name="app-version" content="1.8.1" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -72,6 +72,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .globeBox canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:grab}
 .gzoom{position:absolute;right:10px;top:10px;display:grid;gap:6px}
 .gzoom .btn{min-width:44px;padding:0;font-size:22px;line-height:1;background:#0c151dcc}
+.gzoom #gSpin svg{width:16px;height:16px;fill:currentColor;display:block;margin:auto}
 .gtip{position:absolute;z-index:2;pointer-events:none;max-width:250px;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:#0c151def;font-size:13px;line-height:1.4;white-space:pre-line;transform:translate(14px,-50%)}
 .gtip.left{transform:translate(calc(-100% - 14px),-50%)}
 .gtip[hidden]{display:none}
@@ -188,7 +189,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <div class="picker">
       <div class="globeBox" id="globeBox"><canvas id="globe" aria-label="Globe of public receivers; tap a dot to pick one"></canvas>
         <div class="loadover" id="globeLoad"><span class="spin"></span><span id="globeLoadText">Loading receivers…</span></div>
-        <div class="gzoom"><button class="btn" id="gIn" aria-label="Zoom in">+</button><button class="btn" id="gOut" aria-label="Zoom out">−</button></div>
+        <div class="gzoom"><button class="btn" id="gIn" aria-label="Zoom in">+</button><button class="btn" id="gOut" aria-label="Zoom out">−</button><button class="btn" id="gSpin" aria-pressed="true" aria-label="Stop the globe spinning" title="Stop the globe spinning"></button></div>
         <div class="gtip" id="gTip" hidden></div>
         <div class="legend"><span><i style="background:var(--teal)"></i>Free slots</span><span><i style="background:var(--gold)"></i>Last slot</span><span><i style="background:var(--coral)"></i>Full</span></div>
         <p class="dirnote" id="dirNote">Loading receivers…</p></div>
@@ -721,7 +722,7 @@ function sweepSpots(skip) {
   }
   return out.sort((x, y) => y.m - x.m).slice(0, 30);
 }
-if (/[?&]debug\b/.test(location.search)) window.__wr = { det, found, sweepSpots, st, handsOff: ms => { lastAct = Date.now() - ms; }, get head() { return head; } };   // for tests and troubleshooting
+if (/[?&]debug\b/.test(location.search)) window.__wr = { det, found, sweepSpots, st, handsOff: ms => { lastAct = Date.now() - ms; }, get head() { return head; }, get spinning() { return !!(gCtl && gCtl.autoRotate); } };   // for tests and troubleshooting
 async function findVoice() {
   if (hunt) return stopHunt('Stopped listening for voices.');
   huntProg = null;
@@ -938,13 +939,29 @@ function setLines(name, b64) {
   geoLines[name] = new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: LAYERS[name].color, transparent: true, opacity: LAYERS[name].opacity }));
   gScene.add(geoLines[name]);
 }
+// Globe spin: on by default (off if the visitor prefers less motion); the button's choice is remembered.
+let spinWanted = !matchMedia('(prefers-reduced-motion: reduce)').matches;
+try { const v = localStorage.getItem('wr.spin'); if (v === '1' || v === '0') spinWanted = v === '1'; } catch {}
+const ICON_PAUSE = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg>';
+const ICON_SPIN = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11a.8.8 0 0 0 1.2.7l9-5.5a.8.8 0 0 0 0-1.4l-9-5.5A.8.8 0 0 0 4 2.5z"/></svg>';
+function setSpin(on) {
+  if (gCtl) gCtl.autoRotate = on; const b = $('gSpin'), label = on ? 'Stop the globe spinning' : 'Spin the globe';
+  b.innerHTML = on ? ICON_PAUSE : ICON_SPIN; b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-label', label); b.title = label;
+}
 function initGlobe() {
   const cv = $('globe');
   gR = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: true }); gR.setPixelRatio(Math.min(devicePixelRatio, 2));
   gScene = new THREE.Scene(); gCam = new THREE.PerspectiveCamera(38, 1, .005, 50); gCam.position.copy(ll(30, -40, 3.3));
   gCtl = new OrbitControls(gCam, cv); gCtl.enablePan = false; gCtl.enableDamping = true; gCtl.minDistance = 1.06; gCtl.maxDistance = 5;
-  gCtl.rotateSpeed = .5; gCtl.autoRotate = true; gCtl.autoRotateSpeed = .35;
-  gCtl.addEventListener('start', () => { gCtl.autoRotate = false; flight = null; });
+  gCtl.rotateSpeed = .5; gCtl.autoRotateSpeed = .35; setSpin(spinWanted);
+  // Zooming (wheel, pinch, +/-) leaves the spin alone; dragging the globe round pauses it so you can look somewhere.
+  gCtl.addEventListener('start', () => { flight = null; });
+  const downs = new Map();
+  cv.addEventListener('pointerdown', e => downs.set(e.pointerId, [e.clientX, e.clientY]));
+  cv.addEventListener('pointermove', e => { const d = downs.get(e.pointerId); if (!d || downs.size > 1 || !gCtl.autoRotate) return;   // two fingers: a pinch zoom
+    if (Math.hypot(e.clientX - d[0], e.clientY - d[1]) > 6) setSpin(false); });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) cv.addEventListener(ev, e => downs.delete(e.pointerId));
+  $('gSpin').onclick = () => { setSpin(!gCtl.autoRotate); spinWanted = gCtl.autoRotate; try { localStorage.setItem('wr.spin', spinWanted ? '1' : '0'); } catch {} };
   gCtl.addEventListener('change', () => { if ($('sort').value === 'near' && !nearTimer) nearTimer = setTimeout(() => { nearTimer = null; renderList(); }, 500); });   // throttled: the globe turns every frame
   gScene.add(new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), new THREE.ShaderMaterial({
     vertexShader: `varying vec3 vN,vV;void main(){vec4 mv=modelViewMatrix*vec4(position,1.);vN=normalize(normalMatrix*normal);vV=normalize(-mv.xyz);gl_Position=projectionMatrix*mv;}`,
@@ -975,7 +992,7 @@ function initGlobe() {
       const h = pickAt(hoverQ[0] - r.left, hoverQ[1] - r.top); hoverQ = null;
       if (h) showTip(h.here.includes(selected) ? selected : h.here[0], h); else $('gTip').hidden = true; }); });
   cv.addEventListener('pointerleave', () => { $('gTip').hidden = true; });
-  const zoomBy = k => { gCtl.autoRotate = false; zoomAnim = { from: gCam.position.length(), to: Math.max(gCtl.minDistance, Math.min(gCtl.maxDistance, 1 + (gCam.position.length() - 1) * k)), t0: performance.now() }; };
+  const zoomBy = k => { zoomAnim = { from: gCam.position.length(), to: Math.max(gCtl.minDistance, Math.min(gCtl.maxDistance, 1 + (gCam.position.length() - 1) * k)), t0: performance.now() }; };
   $('gIn').onclick = () => zoomBy(.5); $('gOut').onclick = () => zoomBy(2);
 }
 // Receivers under a point on the globe (within 18 px), and every receiver sharing the nearest one's spot.
@@ -1026,7 +1043,7 @@ function rebuildPoints() {
   else gSel.visible = false;
   if (gSel.visible) s.computeBoundingSphere();   // the ring moves: keep three.js from culling it at the old spot
 }
-function flyTo(lat, lon) { if (!gCam) return; gCtl.autoRotate = false; zoomAnim = null;
+function flyTo(lat, lon) { if (!gCam) return; setSpin(false); zoomAnim = null;   // keep the picked receiver in view
   const d = gCam.position.length(); flight = { from: gCam.position.clone().normalize(), to: ll(lat, lon), t0: performance.now(), d0: d, d1: Math.min(d, 2.2) }; }   // fly to it and come in a little
 function renderGlobe() {
   if (gDirty) rebuildPoints();
@@ -1039,6 +1056,7 @@ function renderGlobe() {
   gCtl.zoomSpeed = dist < 1.6 ? .5 : 1;
   if (coastHi === 'no' && dist < 2.3) loadHiCoast();
   if (gSel.visible) gSel.material.uniforms.uPx.value = gR.getPixelRatio() * (1 + .25 * Math.sin(performance.now() / 250));
+  gCtl.autoRotateSpeed = .35 * Math.max(.08, Math.min(1, (gCam.position.length() - 1) / 2.3));   // slower when zoomed in close
   gCtl.update(); gR.render(gScene, gCam);
 }
 
