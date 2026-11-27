@@ -41,4 +41,12 @@ window.LMNOP_GAMES = [
     color: "#7a5cc7",
     tags: ["Building", "Strategy", "Desktop"],
   },
+  {
+    title: "Skydial",
+    tagline: "Live shortwave radio from around the globe.",
+    status: "prototype",
+    url: "https://lmnop.games/sdrHam/",
+    color: "#2bb3a3",
+    tags: ["Live radio", "3D"],
+  },
 ];
