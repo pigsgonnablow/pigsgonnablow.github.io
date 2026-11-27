@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.3.0" data-date="2026-11-27">
+<meta name="app-version" content="1.4.0" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -40,6 +40,14 @@ header.band{padding-bottom:14px}
 .btn{min-height:44px;padding:0 18px;border-radius:10px;border:1px solid var(--line);background:#182a38;color:var(--ink);font-size:16px;font-weight:600;cursor:pointer}
 .btn:hover{border-color:var(--teal)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
+/* Loading: a spinning ring wherever something is still on its way (a slow pulse instead if the visitor prefers less motion) */
+.spin,.busy::before{content:'';display:inline-block;width:1em;height:1em;box-sizing:border-box;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:spin .8s linear infinite;vertical-align:-.15em;margin-right:.5em;opacity:.85;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{opacity:.25}}
+@media(prefers-reduced-motion:reduce){.spin,.busy::before{animation:pulse 1.6s ease-in-out infinite}}
+.loadover{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;color:var(--ink);font:500 15px "IBM Plex Sans",sans-serif;text-align:center;padding:0 20px;background:#0c151dcc;pointer-events:none;z-index:4}
+.loadover[hidden]{display:none}.loadover .spin{width:44px;height:44px;border-width:4px;color:var(--teal);margin:0}
+.stage.sigmode .loadover{right:min(46%,620px)}
+@media(max-width:860px){.stage.sigmode .loadover{right:0;bottom:auto;height:250px}}
 .btn.main{background:var(--coral);border-color:var(--coral);color:#1a0d08;min-width:132px}
 .btn.main.on{background:#182a38;color:var(--coral)}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
@@ -155,6 +163,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <ol class="siglist" id="sigList"></ol>
   </div>
   <div class="hud"><div class="dial" id="dial">7 030.00<small>kHz</small></div><div class="what" id="what">Pick a receiver below</div></div>
+  <div class="loadover" id="stageLoad" role="status" hidden><span class="spin"></span><span id="stageLoadText">Connecting…</span></div>
   <div class="hint">Drag to orbit · tap a ridge to tune · ← → to nudge</div>
   <div class="span" id="spanLbl">9 533 – 9 767 kHz · not connected</div>
 </div>
@@ -176,6 +185,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
   <div id="live">
     <div class="picker">
       <div class="globeBox" id="globeBox"><canvas id="globe" aria-label="Globe of public receivers; tap a dot to pick one"></canvas>
+        <div class="loadover" id="globeLoad"><span class="spin"></span><span>Loading receivers…</span></div>
         <div class="gzoom"><button class="btn" id="gIn" aria-label="Zoom in">+</button><button class="btn" id="gOut" aria-label="Zoom out">−</button></div>
         <div class="gtip" id="gTip" hidden></div>
         <div class="legend"><span><i style="background:var(--teal)"></i>Free slots</span><span><i style="background:var(--gold)"></i>Last slot</span><span><i style="background:var(--coral)"></i>Full</span></div>
@@ -666,7 +676,7 @@ function renderSignals(force) {
     : `<li class="empty">${!liveReady && !found.size ? 'Nothing yet. Connect to a receiver first.'
       : found.size && !allKinds() ? `No ${KINDS.filter(k => showKinds.has(k[0])).map(k => k[1].toLowerCase()).join(' or ')} heard yet${+$('sigMin').value ? ' at this strength' : ''}. Scan all bands to look further, or tap All.`
       : found.size ? 'Nothing this strong yet. Lower the minimum strength to see fainter signals.'
-      : 'Listening for signals… nothing stands above the noise yet.'}</li>`;
+      : '<span class="spin"></span>Listening for signals… nothing stands above the noise yet.'}</li>`;
   if (html === sigHtml) return;
   const fk = document.activeElement && document.activeElement.closest && document.activeElement.closest('#sigList button') ? document.activeElement.dataset.k : null;
   sigHtml = html; $('sigList').innerHTML = html; updatePins();
@@ -752,7 +762,7 @@ async function findVoice() {
 }
 let huntTuning = false;
 function setView(sig) {
-  sigOn = sig; $('viewWf').setAttribute('aria-pressed', !sig); $('viewSig').setAttribute('aria-pressed', sig);
+  sigOn = sig; try { localStorage.setItem('wr.view', sig ? 'sig' : 'wf'); } catch {} $('viewWf').setAttribute('aria-pressed', !sig); $('viewSig').setAttribute('aria-pressed', sig);
   $('sigs').hidden = !sig; $('stage').classList.toggle('sigmode', sig); if (sig) { detFinalize(); renderSignals(true); }
   if (!sig) { showGhost(null); focusTo = 0; } updatePins(); resize();
 }
@@ -871,7 +881,7 @@ function renderList(force) {
   const html = list.length ? list.map((r, i) => `<li><button data-i="${i}" class="${r === selected ? 'sel' : ''}">
     <span class="nm">${esc(r.name)}</span><span class="lc">${esc(r.loc || r.antenna || r.id)}</span>
     <span class="sl">${appLimited(r) ? '<b>web page only</b>' : `<b>${free(r)}/${r.max}</b> free`}<br>${near ? (isFinite(r._km) ? Math.round(r._km).toLocaleString() + ' km' : 'no GPS') : r.snr != null ? 'SNR ' + r.snr + ' dB' : ''}</span></button></li>`).join('')
-    : `<li class="empty">${RX.length ? 'No receivers match. Untick "Free slots only" or tune elsewhere.' : dirMode === 'loading' ? 'Loading…' : 'No receiver list available.'}</li>`;
+    : `<li class="empty">${RX.length ? 'No receivers match. Untick "Free slots only" or tune elsewhere.' : dirMode === 'loading' ? '<span class="spin"></span>Loading receivers…' : 'No receiver list available.'}</li>`;
   $('rxList').onclick = e => { const b = e.target.closest('button'); if (b) select(list[+b.dataset.i], true); };
   if (html !== rxHtml) { rxHtml = html; $('rxList').innerHTML = html; }   // only touch the list when it actually changed
 }
@@ -1030,7 +1040,7 @@ function renderGlobe() {
 /* ---------- live KiwiSDR connection ---------- */
 let snd = null, wf = null, keep = null, idle = null, kiwiBw = 30e6, kiwiRate = 12000;
 // Each waterfall row says where it starts (in units of bandwidth / (fft size × 2^zoom_max)) and at what zoom.
-let wfFft = 1024, wfZmax = 14, wfAskedAt = 0, wfTrust = true;
+let wfFft = 1024, wfZmax = 14, wfAskedAt = 0, wfTrust = true, wfWait = false;   // wfWait: what the terrain is waiting for, if anything
 const ZOOM = 7;
 const PB = { am: [-4900, 4900], usb: [300, 2700], lsb: [-2700, -300], cw: [300, 700] };
 function status(msg, err) { $('status').textContent = msg; $('status').classList.toggle('err', !!err); }
@@ -1053,7 +1063,7 @@ function kiwiCenter() {
 // the receiver's owner may still set their own time limits.
 function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
   idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
-function kiwiClose() { if (scan) { clearTimeout(scan.timer); scan = null; } if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
+function kiwiClose() { wfWait = false; if (scan) { clearTimeout(scan.timer); scan = null; } if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connectHost').textContent = 'Connect'; connectBtn(); }
 // The main button always says what pressing it will do.
@@ -1116,7 +1126,7 @@ let drops = [], retryTimer = null;                                  // times of 
 let session = null;   // identity of the live session (kept across its own reconnects)
 function kiwiOpen(origin, viaRelay, from, retry = 0) {
   if (!retry) { clearTimeout(retryTimer); retryTimer = null; }   // a new session replaces any pending reconnect
-  kiwiClose(); const me = session = {}; kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
+  kiwiClose(); wfWait = 'Connecting to the receiver…'; const me = session = {}; kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
   if (!retry) found.clear();   // a new receiver hears a different band; a reconnect keeps what was found
   const seq = connectSeq, ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), name = current ? current.name : 'The receiver';
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(`${wsBase}/kiwi/${ts}/${s}`)}` : `${wsBase}/kiwi/${ts}/${s}`;
@@ -1176,12 +1186,12 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
       const why = endedBy(m, viaRelay); if (why) { ended = why; if (!live) return fail(why); }
       if (m.bandwidth) kiwiBw = +m.bandwidth;
       if (m.sample_rate) kiwiRate = Math.round(+m.sample_rate);
-      if (m.audio_rate && !live) { live = true; clearTimeout(guard);
+      if (m.audio_rate && !live) { live = true; clearTimeout(guard); if (wfWait) wfWait = 'Loading the waterfall…';
         S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
         S.send('SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50'); S.send('SET squelch=0 max=0');
         S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune(); sendNoise();
         status(retry ? `Reconnected to ${name}.` : `${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`);
-        wfGuard = setTimeout(() => { if (S === snd && !gotRow) status("Connected, but this receiver isn't sending a waterfall right now. Audio still works.", true); }, 8000); }
+        wfGuard = setTimeout(() => { if (S === snd && !gotRow) wfWait = false; if (S === snd && !gotRow) status("Connected, but this receiver isn't sending a waterfall right now. Audio still works.", true); }, 8000); }
     } else if (tag === 'SND' && listening && e.data.byteLength > 10 && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) {
       const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
       for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; play(out, kiwiRate); } };
@@ -1209,7 +1219,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
           if (zm !== ZOOM || Math.abs(startHz - st.lo) > (st.hi - st.lo) / BINS * 1.5) {
             // If rows never line up with what we asked for, this receiver reports positions differently: stop checking.
             if (wfAskedAt && performance.now() - wfAskedAt > 3000) wfTrust = false; else return; } }
-        if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
+        if (!gotRow) { gotRow = true; clearTimeout(wfGuard); wfWait = false; }
         if (++F.rows === 60) wfTries = 0;   // flowing again: a later drop gets fresh retries
         const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
         for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
@@ -1236,6 +1246,17 @@ $('connectHost').onclick = () => {
 };
 $('mode').onchange = () => { flushAudio(); kiwiTune(); };
 initGlobe(); loadDir();
+// Signals sits beside the waterfall by default; the choice is remembered.
+{ let v = null; try { v = localStorage.getItem('wr.view'); } catch {} setView(v !== 'wf'); }
+// Loading indicators follow the app's state, so every path that starts or ends a wait is covered.
+function syncBusy() {
+  const tog = (id, on) => $(id).classList.toggle('busy', !!on);
+  tog('voiceBtn', hunt); tog('scanBtn', scan); tog('sigNote', scan); tog('dirNote', dirMode === 'loading');
+  $('globeLoad').hidden = dirMode !== 'loading';
+  const wait = checking ? 'Checking the receiver has a free slot…' : wfWait;
+  $('stageLoad').hidden = !wait; if (wait && $('stageLoadText').textContent !== wait) $('stageLoadText').textContent = wait;
+}
+setInterval(syncBusy, 200); syncBusy();
 // Version: the page's own (stamped by `npm run release`), and the release the server was last deployed with.
 { const m = document.querySelector('meta[name=app-version]'), v = m?.content || '?', d = m?.dataset.date;
   const when = d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
