@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.2.4" data-date="2026-11-26">
+<meta name="app-version" content="1.3.0" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -109,6 +109,9 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .sigctl label{min-height:44px;color:var(--ink)}
 .siglist em{font:600 11px "IBM Plex Sans",sans-serif;font-style:normal;padding:1px 7px;border-radius:9px;margin-left:6px;vertical-align:1px}
 .siglist em.heard{background:#1f6f4a;color:#e8fff3}.siglist em.quiet{background:#2a3440;color:var(--mute)}
+.noise{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center}
+.noise label{min-height:44px;display:inline-flex;align-items:center;gap:6px}
+.noise label.off{opacity:.45}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin:-4px 0 12px}
 .chips button{min-height:36px;padding:4px 12px;border-radius:18px;border:1px solid var(--line);background:#0f1b25;color:var(--mute);font:14px "IBM Plex Sans",sans-serif;cursor:pointer}
 .chips button[aria-pressed=true]{border-color:var(--teal);color:var(--ink);background:#123036}
@@ -163,6 +166,12 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <div class="steps"><button class="btn" data-step="-1">−1k</button><button class="btn" data-step="-0.1">−.1</button><button class="btn" data-step="0.1">+.1</button><button class="btn" data-step="1">+1k</button></div>
     <label>Freq <input id="freq" inputmode="decimal" size="9" value="9650.00" aria-label="Frequency in kHz"> kHz</label>
     <label>Volume <input type="range" id="vol" min="0" max="1" step="0.01" value="0.7"></label>
+    <div class="noise" role="group" aria-label="Noise filters (done by the receiver)">
+      <label title="Noise reduction, done by the receiver: Reduce is gentle, Strong removes more hiss but can sound watery">Noise
+        <select id="nrLevel"><option value="off">Off</option><option value="light">Reduce</option><option value="strong">Strong</option></select></label>
+      <label title="Noise blanker: cuts short clicks and pops (electric fences, ignition, power-line crackle)"><input type="checkbox" id="nbClicks"> Clicks</label>
+      <label title="Auto-notch: removes steady whistles and carriers on top of a voice"><input type="checkbox" id="nrWhistle"> Whistles</label>
+    </div>
   </div>
   <div id="live">
     <div class="picker">
@@ -322,6 +331,27 @@ addEventListener('keydown', e => { if (e.target.matches('input:not([type=checkbo
 // Volume never goes fully to zero: some audio drivers power down on pure digital silence and their clock then runs
 // slow (seen at 2/3 speed). 0.001 is about -60 dB, which nobody can hear.
 const volume = () => Math.max(+$('vol').value, .001);
+// Receiver-side noise filters (KiwiSDR "noise filter", "noise blanker" and auto-notch), sent with its own default
+// parameters. Receivers with older firmware ignore commands they don't know. Remembered between visits.
+let noise = { level: 'off', clicks: false, whistles: false };
+try { Object.assign(noise, JSON.parse(localStorage.getItem('wr.noise') || '{}')); } catch {}
+function noiseCommands(n) {
+  const c = [`SET nb algo=${n.clicks ? 1 : 0}`];
+  if (n.clicks) c.push('SET nb type=0 param=0 pval=100', 'SET nb type=0 param=1 pval=50', 'SET nb type=0 en=1');   // 100 µs gate, 50% threshold
+  const whistles = n.whistles && n.level !== 'strong';                // spectral NR has no auto-notch
+  const algo = n.level === 'strong' ? 3 : n.level === 'light' || whistles ? 1 : 0;
+  c.push(`SET nr algo=${algo}`);
+  if (algo === 1) for (const type of [0, 1]) {                         // WDSP LMS: 0 = denoiser, 1 = auto-notch
+    c.push(`SET nr type=${type} param=0 pval=64`, `SET nr type=${type} param=1 pval=16`,
+      `SET nr type=${type} param=2 pval=${8.192e-2 / 2 ** 10}`, `SET nr type=${type} param=3 pval=${8192 / 2 ** 16}`,
+      `SET nr type=${type} en=${type === 0 ? +(n.level === 'light') : +whistles}`); }
+  if (algo === 3) c.push('SET nr type=0 param=0 pval=1', 'SET nr type=0 param=1 pval=0.95', 'SET nr type=0 param=2 pval=1000', 'SET nr type=0 param=3 pval=0', 'SET nr type=0 en=1');
+  return c;
+}
+function sendNoise() { if (snd && snd.readyState === 1) for (const c of noiseCommands(noise)) snd.send(c); }
+function noiseUi() { $('nrLevel').value = noise.level; $('nbClicks').checked = noise.clicks; $('nrWhistle').checked = noise.whistles;
+  const strong = noise.level === 'strong'; $('nrWhistle').disabled = strong; $('nrWhistle').parentElement.classList.toggle('off', strong);
+  $('nrWhistle').parentElement.title = strong ? 'Whistle removal works with Noise off or Reduce, not Strong' : 'Auto-notch: removes steady whistles and carriers on top of a voice'; }
 let ctx = null, gain = null, nextT = 0, queued = [], audioBusy = 0, clk = null, rebuilt = [], clockWarned = false;
 function ensureAudio() {
   if (ctx) return;
@@ -592,6 +622,10 @@ $('sigKinds').onclick = e => { const b = e.target.closest('button'); if (!b) ret
   else { showKinds.has(k) ? showKinds.delete(k) : showKinds.add(k); if (!showKinds.size) showKinds = new Set(KINDS.map(K => K[0])); }
   saveFilters(); renderSignals(true); updatePins(); };
 $('voiceBtn').onclick = findVoice;
+for (const id of ['nrLevel', 'nbClicks', 'nrWhistle']) $(id).onchange = () => {
+  noise = { level: $('nrLevel').value, clicks: $('nbClicks').checked, whistles: $('nrWhistle').checked };
+  try { localStorage.setItem('wr.noise', JSON.stringify(noise)); } catch {} noiseUi(); sendNoise(); };
+noiseUi();
 $('sigMin').onchange = () => { saveFilters(); renderSignals(true); updatePins(); };
 let sigPress = false, sigHover = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
 // Keep the station you're tuned to in view in the list (not when you just picked it there yourself).
@@ -1145,7 +1179,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
       if (m.audio_rate && !live) { live = true; clearTimeout(guard);
         S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
         S.send('SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50'); S.send('SET squelch=0 max=0');
-        S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune();
+        S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune(); sendNoise();
         status(retry ? `Reconnected to ${name}.` : `${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`);
         wfGuard = setTimeout(() => { if (S === snd && !gotRow) status("Connected, but this receiver isn't sending a waterfall right now. Audio still works.", true); }, 8000); }
     } else if (tag === 'SND' && listening && e.data.byteLength > 10 && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) {
