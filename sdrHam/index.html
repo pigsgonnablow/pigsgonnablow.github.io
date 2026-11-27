@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.5.1" data-date="2026-11-26">
+<meta name="app-version" content="1.6.0" data-date="2026-11-27">
 <title>Waterfall Radio</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -149,7 +149,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 .ver{padding:18px 0 28px;color:var(--mute);font-size:13px}
 .ver b{color:var(--ink);font-weight:600}
 </style>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"}}</script>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js","three/addons/":"./vendor/addons/"}}</script>   <!-- self-hosted: no outside code runs on the page -->
 </head>
 <body>
 <header class="band"><div class="wrap">
@@ -1142,6 +1142,7 @@ function endedBy(m, viaRelay) {
   return null;
 }
 const RETRY_MS = [2000, 6000, 15000, 30000];   // ~50 s in all: long enough to ride out a server restart
+const jitter = ms => Math.round(ms * (0.75 + Math.random() * 0.5));   // so everyone doesn't reconnect to a receiver in the same second
 let drops = [], retryTimer = null;                                  // times of recent unexpected drops, to stop retrying a receiver that keeps dropping
 // retry: 0 for a fresh connection, 1..3 when reconnecting after an unexpected drop (same receiver, frequency and mode).
 let session = null;   // identity of the live session (kept across its own reconnects)
@@ -1160,7 +1161,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     status(`${why} Reconnecting to ${name} (try ${n} of ${RETRY_MS.length})…`, true); $('what').textContent = 'Reconnecting…'; setSpan(st.lo, st.hi, 'reconnecting'); wfWait = `Reconnecting… (try ${n} of ${RETRY_MS.length})`;
     // Keyed to the session, not to connectSeq: a slot check for another receiver must not stop this from reconnecting,
     // and a new session (or Disconnect) clears the timer.
-    retryTimer = setTimeout(() => { retryTimer = null; if (session === me) kiwiOpen(origin, viaRelay, from, n); else connectBtn(); }, RETRY_MS[n - 1]);
+    retryTimer = setTimeout(() => { retryTimer = null; if (session === me) kiwiOpen(origin, viaRelay, from, n); else connectBtn(); }, jitter(RETRY_MS[n - 1]));
     connectBtn();
   };
   // A too_busy after we are live is the receiver's limit on outside apps (see rememberNoApps), not a full receiver.
@@ -1186,10 +1187,13 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
   S.binaryType = 'arraybuffer'; S.onopen = () => S.send('SET auth t=kiwi p=');
   S.onerror = () => { if (S === snd) fail("couldn't be reached."); };
   S.onclose = e => { if (S !== snd) return;
-    if (e.code === 4429 && e.reason !== 'receiver busy on relay') return endSession(e.reason === 'relay full'
-      ? 'This site’s relay is full right now. Try again in a few minutes.'
-      : 'Too many connections from your network through this site right now. Close other Waterfall Radio tabs or wait a minute.');
-    if (e.code === 4429) return fail('has no free slots on this site’s relay right now.');
+    if (e.code === 4429 && e.reason === 'receiver busy on relay') return fail('has no free slots on this site’s relay right now.');
+    if (e.code === 4429 && e.reason === 'receiver refused recently') return fail('turned this site away a moment ago (full, down, or not accepting apps).');
+    if (e.code === 4429) return endSession({
+      'relay full': 'This site’s relay is full right now. Try again in a few minutes.',
+      'daily limit for your address': 'You’ve reached today’s listening limit on this site (it keeps the free service running). It resets at midnight UTC.',
+      'relay daily limit': 'This site has used today’s data allowance for its free relay. It resets at midnight UTC; sorry about that.',
+    }[e.reason] || 'Too many connections from your network through this site right now. Close other Waterfall Radio tabs or wait a minute.');
     if (!live) return fail(ended || (busy ? 'is full right now.' : "didn't accept the connection."));
     if (ended) return endSession(`${name} ${ended}`);            // the receiver said why: respect it
     if (e.reason === 'session time limit') return endSession('The relay’s 4-hour session limit was reached. Connect again to keep listening.');
