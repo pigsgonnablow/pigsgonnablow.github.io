@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.11.1" data-date="2026-11-28">
+<meta name="app-version" content="1.11.2" data-date="2026-11-28">
 <title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -59,7 +59,7 @@ body.landing #stage,body.landing #controls,body.landing .onlive,body:not(.landin
 /* "Next step": the one control that gets you closer to hearing something glows softly until you use it */
 .next{position:relative;box-shadow:0 0 0 0 rgba(255,122,89,.7);animation:nextGlow 1.6s ease-out infinite}
 @keyframes nextGlow{0%{box-shadow:0 0 0 0 rgba(255,122,89,.65)}70%{box-shadow:0 0 0 12px rgba(255,122,89,0)}100%{box-shadow:0 0 0 0 rgba(255,122,89,0)}}
-label.next{border-radius:8px;padding:2px 6px;outline:2px solid var(--coral);box-shadow:none;animation:none}
+label.next{border-radius:8px;outline:2px solid var(--coral);outline-offset:4px;box-shadow:none;animation:none}
 @media (prefers-reduced-motion:reduce){.next{animation:none;outline:2px solid var(--coral);outline-offset:3px}}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{min-height:44px;padding:0 16px;border:0;background:transparent;color:var(--mute);font-size:16px;font-weight:600;cursor:pointer}
@@ -897,12 +897,14 @@ function relayMsg() {
   const who = relayShut === 'daily limit for your address' ? 'You’ve used today’s listening allowance on this site’s free relay' : 'This site’s free relay has used up today’s data allowance';
   const direct = RX.some(r => !needsRelay(r) && !noApp(r) && !r.offline);
   return `${who} (it resets in ${untilReset()}). ${direct ? 'Receivers that connect directly still work: they’re listed first, and the rest say “relay used up”.' : 'Please come back then.'}`; }
+let resetTimer = null;
 function shutRelay(why, mins) { const was = relayShut; relayShut = why; relayReset = mins ? Date.now() + mins * 60e3 : Math.ceil(Date.now() / 86400e3) * 86400e3;
+  clearTimeout(resetTimer); resetTimer = setTimeout(checkRelay, relayReset - Date.now() + 30e3);   // reopen promptly after midnight UTC
   if (was !== why) { gDirty = true; renderList(true); if (selected) select(selected, false, true); } }
 async function checkRelay() {
   if (location.protocol !== 'https:' || dirMode !== 'server') return;
   try { const r = await (await fetch(API + '/api/relay', { cache: 'no-store', signal: AbortSignal.timeout(8000) })).json();
-    if (r.open) { if (relayShut) { relayShut = null; gDirty = true; renderList(true); } return; }
+    if (r.open) { if (relayShut) { relayShut = null; gDirty = true; renderList(true); if (selected) select(selected, false, true); } return; }
     const first = !relayShut; shutRelay(r.why, r.resetsInMin);
     if (first && !snd && !checking) status(relayMsg(), true);
   } catch {} }
@@ -1157,7 +1159,7 @@ let lastAct = Date.now(); const IDLE_RECONNECT_MS = 10 * 60e3;
 for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(ev, () => { lastAct = Date.now(); }, { capture: true, passive: true });
 function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
   idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
-function kiwiClose() { wfWait = false; clearTimeout(tuneTimer); tuneTimer = null; if (scan) unScan(); if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
+function kiwiClose() { wfWait = false; clearTimeout(tuneTimer); tuneTimer = null; if (scan) unScan(); if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); recent.length = 0; flushAudio();
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connectHost').textContent = 'Connect'; connectBtn(); scanIdle(); rxTop = 32e6;
   if (snd === null && $('what').textContent.startsWith('Live')) { $('what').textContent = 'Not connected'; setSpan(st.lo, st.hi, 'not connected'); } }
@@ -1177,7 +1179,7 @@ function tryNext(why, from) {
   if (from && usable(from)) pool.sort((a, b) => (usable(a) ? gcKm(from, a) : 1e9) - (usable(b) ? gcKm(from, b) : 1e9));
   const next = pool[0];
   if (tried.size >= 3 || !next) { if (!snd) current = null; connectBtn();
-    return status(live ? `${why} Stayed on ${current.name}.` : `${why} No nearby receiver answered either; pick another one.`, true); }
+    return status(live ? `${why} Stayed on ${current.name}.` : relayShut && !next ? `${why} ${relayMsg()}` : `${why} No nearby receiver answered either; pick another one.`, true); }
   const km = from && usable(from) && usable(next) ? ` (${Math.round(gcKm(from, next)).toLocaleString()} km away)` : '';
   fallbackNote = `${why} Switched to the nearest free receiver${km}.`;
   status(`${why} Trying the nearest free one instead: ${next.name}${km}…`); select(next, true); connectRx(next, true, from);
@@ -1296,7 +1298,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     if (e.code === 4429 && e.reason === 'receiver refused recently') return fail('turned this site away a moment ago (full, down, or not accepting apps).');
     if (e.code === 4429 && e.reason === 'receiver does not accept apps') { rememberNoApps(origin, 0); return fail('only allows its own web page, not apps like this one.'); }
     if (e.code === 4429 && /daily limit/.test(e.reason)) { shutRelay(e.reason); checkRelay();
-      return live ? endSession(relayMsg()) : fail(`needs this site’s relay, which is used up for today (it resets in ${untilReset()}).`); }   // fail() moves on to the nearest direct receiver
+      return live || retry ? endSession(relayMsg()) : fail(`needs this site’s relay, which is used up for today (it resets in ${untilReset()}).`); }   // fail() moves on to the nearest direct receiver
     if (e.code === 4429) return endSession({
       'relay full': 'This site’s relay is full right now. Try again in a few minutes.',
     }[e.reason] || 'Too many connections from your network through this site right now. Close other Skydial tabs or wait a minute.');
