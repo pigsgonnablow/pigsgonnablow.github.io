@@ -240,7 +240,7 @@ input[type=range]{width:100%;touch-action:pan-x;accent-color:var(--accent)}
     </div>
     <div class="row"><label>Ambience volume</label><input type="range" id="rAmb" min="0" max="100"></div>
     <div class="row"><label>Effects volume</label><input type="range" id="rSfx" min="0" max="100"></div>
-    <p class="tips">Tap The Protector to select him, then tap ground or bridge to walk him there. He commands the tiny villagers: drag bridge pieces within his reach and they build them plank by plank, each plank costing 3 wood and 2 stone. If he falls into the sea he is hurt; lose all his health and he is gone. An island is only yours once a temple stands on it, and a temple can only be raised on the island where the villagers live. Drag a piece onto open water so it touches an island you own, or bridges leading off one. Geysers burst up from the sea; a bridge next to one lets workers collect. Planks on a route from home to a geyser stay in repair. Planks off a route start to crack after about a minute and fall after about five, unless you build onto them; tap a cracked plank to mend it for 100 crystal power. Pinch or scroll to zoom, drag to look around. The game opens with the villagers praying at their obelisk until a Protector rises from the swamp (tap to pray with them). Every geyser starts sealed under stone: stand The Protector beside one and choose Bust open geyser (or press E) and he smashes it free with his spiked club; only then can anyone harvest it. The home geyser is his alone: choose Collect crystal, then carry it back to the village. Each crystal is worth 200 crystal power. Automatons can also be ordered to Mine crystals from any geyser they can reach. Tap the village to build a Swamp Automaton for 400. The villagers bolt it together and three of them crew it; tap it and order it to cut trees or mine rock on land you own. Chopped trees grow back from their stumps; quarried stone is gone for good. Desktop: WASD or the arrow keys walk The Protector, R rotates, 1-6 pick a piece.</p>
+    <p class="tips">Tap The Protector to select him, then tap ground or bridge to walk him there. He commands the tiny villagers: drag bridge pieces within his reach and they build them plank by plank, each plank costing 3 wood and 2 stone. If he falls into the sea he is hurt; lose all his health and he is gone. An island is only yours once a temple stands on it, and a temple can only be raised on the island where the villagers live. Once your bridges reach another island, walk The Protector there and choose Raise obelisk: for 12 wood and 24 stone the villagers raise an Obelisk of the Protector, which claims that island so you can bridge onward from it and harvest its groves and stone. Drag a piece onto open water so it touches an island you own, or bridges leading off one. Geysers burst up from the sea; a bridge next to one lets workers collect. Planks on a route from home to a geyser or a claimed island stay in repair. Planks off a route start to crack after about a minute and fall after about five, unless you build onto them; tap a cracked plank to mend it for 100 crystal power. Pinch or scroll to zoom, drag to look around. The game opens with the villagers praying at their obelisk until a Protector rises from the swamp (tap to pray with them). Every geyser starts sealed under stone: stand The Protector beside one and choose Bust open geyser (or press E) and he smashes it free with his spiked club; only then can anyone harvest it. The home geyser is his alone: choose Collect crystal, then carry it back to the village. Each crystal is worth 200 crystal power. Automatons can also be ordered to Mine crystals from any geyser they can reach. Tap the village to build a Swamp Automaton for 400. The villagers bolt it together and three of them crew it; tap it and order it to cut trees or mine rock on land you own. Chopped trees grow back from their stumps; quarried stone is gone for good. Desktop: WASD or the arrow keys walk The Protector, R rotates, 1-6 pick a piece.</p>
     <div class="btns"><button class="btn" id="newMap">New map</button><button class="btn primary" id="closeMenu">Done</button></div>
   </div>
 </div>
@@ -252,7 +252,7 @@ input[type=range]{width:100%;touch-action:pan-x;accent-color:var(--accent)}
 /* ============================================================
    Constants & helpers
    ============================================================ */
-const TW=64, TH=32, LH=14, BH=11, MW=96, MH=96, NSLOT=6, MAXW=154, LIFT=56;
+const TW=64, TH=32, LH=14, BH=11, MW=128, MH=128, NSLOT=6, MAXW=154, LIFT=56;
 const DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
 const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
 const lerp=(a,b,t)=>a+(b-a)*t;
@@ -521,7 +521,7 @@ let cellCol=[],decor=new Uint8Array(MW*MH),ess=new Uint8Array(MW*MH);
 let VW=0,VH=0,DPR=1;
 const cam={x:0,y:0,z:1};
 const waves=[];
-for(let i=0;i<2000;i++)waves.push({x:rnd(.3,MW-.3),y:rnd(.3,MH-.3),len:rnd(14,30),sp:rnd(.6,1.4),ph:rnd(0,6.28),ang:rnd(-1,1)});
+for(let i=0;i<2800;i++)waves.push({x:rnd(.3,MW-.3),y:rnd(.3,MH-.3),len:rnd(14,30),sp:rnd(.6,1.4),ph:rnd(0,6.28),ang:rnd(-1,1)});
 
 const isLand=(x,y)=>inB(x,y)&&land[idx(x,y)]===1;
 const isSolid=(x,y)=>inB(x,y)&&(land[idx(x,y)]===1||bridges[idx(x,y)]!==null);
@@ -566,16 +566,18 @@ function newGame(seed){
   /* home island: random size and position */
   const hb=blobCells(150+Math.floor(rng()*70),rng);
   let hcx=0,hcy=0; for(const c of hb){hcx+=c[0];hcy+=c[1];} hcx/=hb.length; hcy/=hb.length;
-  const hox=Math.round(26+rng()*(MW-52)-hcx),hoy=Math.round(26+rng()*(MH-52)-hcy);
+  const hox=Math.round(34+rng()*(MW-68)-hcx),hoy=Math.round(34+rng()*(MH-68)-hcy);
   commit(hb.map(c=>[c[0]+hox,c[1]+hoy]),true);
   /* other land: organic blobs laid out in one of three styles */
   const style=['scattered','chain','clusters'][Math.floor(rng()*3)];
-  const target=(style==='clusters'?62:50)+Math.floor(rng()*14);
-  const sizes=[2,3,4,5,6,8,10,14,18,24,32,40,55,70,90];
+  const target=(style==='clusters'?96:80)+Math.floor(rng()*22);
+  /* any size at all: log-uniform from a two-cell rock to a sprawling landmass, so there are
+     plenty of skerries but also a few islands bigger than home */
+  const isleSize=()=>Math.max(2,Math.round(2*Math.pow(160,Math.pow(rng(),.9))));
   let tries=0,fails=0;
   while(islands.length<target+1&&tries<20000){
     tries++;
-    const n=sizes[Math.floor(rng()*sizes.length)],cells=blobCells(n,rng);
+    const n=isleSize(),cells=blobCells(n,rng);
     let cx=0,cy=0; for(const c of cells){cx+=c[0];cy+=c[1];} cx/=cells.length; cy/=cells.length;
     let ox,oy;
     if(rng()<.2){
@@ -633,10 +635,10 @@ function newGame(seed){
     /* a modest spring: enough to fund a first automaton or two, not a fortune */
     const hg=geysers[geysers.length-1]; hg.cap=hg.stock=8; hg.regen=.06; hg.home=true;
   }
-  const seaN=28+Math.floor(rng()*10);
-  for(let k=0;k<seaN;k++)placeSea(k<2?[7,12]:[10,190],7);
+  const seaN=46+Math.floor(rng()*14);
+  for(let k=0;k<seaN;k++)placeSea(k<2?[7,12]:[10,250],7);
   const cand=islands.filter(o=>!o.home&&o.cells.length>=8).sort(()=>rng()-.5);
-  let nl=6+Math.floor(rng()*5);
+  let nl=10+Math.floor(rng()*7);
   for(const o of cand){
     if(nl<=0)break;
     const pool=o.cells.filter(i=>hd(i%MW,(i/MW)|0)>=12); if(!pool.length)continue;
@@ -645,10 +647,10 @@ function newGame(seed){
     if(geysers.some(g=>Math.abs(g.x-ax)+Math.abs(g.y-ay)<5))continue;
     addG(ax,ay,true); nl--;
   }
-  while(geysers.length<20){if(!placeSea([7,190],3))break;}
+  while(geysers.length<34){if(!placeSea([7,250],3))break;}
   bake();
   computeNetwork(true);
-  selP=false; placingTemple=false; templeGhost=null; temples=[]; houses=[]; autos=[]; selA=null; vOpen=false; plans=new Map(); gameOver=false;
+  selP=false; placingTemple=false; placeKind='temple'; templeGhost=null; temples=[]; houses=[]; autos=[]; selA=null; vOpen=false; plans=new Map(); gameOver=false;
   decor[home.idx]=0;
   /* the game opens with the village on its knees at the obelisk, praying for a Protector */
   summon={t:0,faith:0,phase:'pray',chant:0};
@@ -795,6 +797,7 @@ function buildGraph(){
     if(g.land)addE(v,isl[idx(g.x,g.y)]);
     else for(const d of DIRS){const nx=g.x+d[0],ny=g.y+d[1];if(inB(nx,ny)&&passable(idx(nx,ny)))addE(v,nodeOf(idx(nx,ny)));}
   });
+  for(const o of islands)if(o.owned&&!o.home&&o.linked)terms.push(o.id);
   return{adj,s:isl[home.idx],terms,NI,NB};
 }
 function essentialSet(G){
@@ -839,7 +842,13 @@ function computeEssential(){
 }
 function inReach(x,y){return prot&&Math.max(Math.abs(x+.5-prot.x),Math.abs(y+.5-prot.y))<=REACH+.5;}
 /* '' when a temple can go here, otherwise why not */
+/* the outpost raised on any other island: an Obelisk of the Protector */
+const OB_WOOD=12,OB_STONE=24;
+let placeKind='temple';
+const isOb=t=>t.kind==='obelisk';
+function structName(k){return k==='obelisk'?'obelisk':'temple';}
 function templeWhy(x,y){
+  if(placeKind==='obelisk')return obeliskWhy(x,y);
   if(!inB(x,y))return 'ground';
   const id=isl[idx(x,y)];
   for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
@@ -851,12 +860,31 @@ function templeWhy(x,y){
   if(!villagersOn(id))return 'villagers';
   return '';
 }
+function obeliskWhy(x,y){
+  if(!inB(x,y))return 'oground';
+  const id=isl[idx(x,y)];
+  for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++){
+    const cx=x+dx,cy=y+dy; if(!inB(cx,cy))return 'oground';
+    const i=idx(cx,cy); if(!land[i]||isl[i]!==id||geyserAt[i]>=0||onTempleAt(cx,cy))return 'oground';
+    if(!inReach(cx,cy))return 'reach';
+  }
+  if(temples.some(t=>t.isl===id))return 'otaken';
+  if(villagersOn(id))return 'ovillage';
+  if(!islands[id].linked)return 'cutoff';
+  if(wood<OB_WOOD||stone<OB_STONE)return 'ocost';
+  return '';
+}
 function templeOK(x,y){return !templeWhy(x,y);}
 const TEMPLE_WHY={
   ground:'The temple needs a 2 by 2 patch of open ground on one island, off the village and geysers.',
   reach:'That spot is beyond The Protector\'s reach. Walk him closer first.',
   taken:'This island already has its temple.',
-  villagers:'A temple can only be raised on the island where the villagers live, beside their village.'};
+  villagers:'A temple can only be raised on the island where the villagers live, beside their village. Elsewhere, raise an Obelisk of the Protector.',
+  oground:'The obelisk needs a 2 by 2 patch of open ground on one island, off any geyser.',
+  otaken:'The Protector already watches over this island.',
+  ovillage:'The village island takes a temple, not an obelisk.',
+  cutoff:'The villagers cannot reach this island yet. Bridge it to home so they can walk out and raise the obelisk.',
+  ocost:'An Obelisk of the Protector takes '+OB_WOOD+' wood and '+OB_STONE+' stone. Have an automaton cut and quarry more.'};
 function setTempleGhostAt(px,py,touch){
   /* pointer lands on the ground plane at island height; centre the 2x2 under it */
   const wx=(px-VW/2)/cam.z+cam.x,wy=(py-(touch?LIFT:0)-VH/2)/cam.z+cam.y;
@@ -867,12 +895,14 @@ function tryTemple(){
   if(!templeGhost)return;
   const why=templeWhy(templeGhost.x,templeGhost.y);
   if(why){AU.bonk();toast(TEMPLE_WHY[why],4200);return;}
-  const temple={x:templeGhost.x,y:templeGhost.y,state:'site',prog:0,isl:isl[idx(templeGhost.x,templeGhost.y)]};
+  const kind=placeKind;
+  const temple={x:templeGhost.x,y:templeGhost.y,state:'site',prog:0,isl:isl[idx(templeGhost.x,templeGhost.y)],kind};
+  if(kind==='obelisk'){wood-=OB_WOOD;stone-=OB_STONE;}
   temples.push(temple);
-  templeGhost=null; placingTemple=false;
+  templeGhost=null; placingTemple=false; placeKind='temple';
   for(let dy=0;dy<2;dy++)for(let dx=0;dx<2;dx++)decor[idx(temple.x+dx,temple.y+dy)]=0;
   for(const w of workers)if(w.state==='idle')w.t=Math.min(w.t,.1+Math.random()*.6);
-  AU.thunk(); toast('The Protector commands it. The villagers stream out to raise the temple.',4000);
+  AU.thunk(); toast(kind==='obelisk'?'The Protector plants his club in the soil. The villagers march out to raise his obelisk.':'The Protector commands it. The villagers stream out to raise the temple.',4000);
   selP=false; updateCmd();
 }
 function completeTemple(temple,w){
@@ -883,8 +913,9 @@ function completeTemple(temple,w){
   computeNetwork(true);
   AU.link();
   for(let k=0;k<24;k++)addP({x:temple.x+1+rnd(-.8,.8),y:temple.y+1+rnd(-.8,.8),z:landZ(temple.x+1,temple.y+1)+20,vx:rnd(-.4,.4),vy:rnd(-.4,.4),vz:rnd(30,70),g:40,life:rnd(1,1.8),s0:3,s1:.5,a:.95,c:PLAYER});
-  floatText(temple.x+1,temple.y+1,landZ(temple.x+1,temple.y+1)+50,'The temple stands','#ffffff');
+  floatText(temple.x+1,temple.y+1,landZ(temple.x+1,temple.y+1)+50,isOb(temple)?'The obelisk wakes':'The temple stands','#ffffff');
   floatText(temple.x+1,temple.y+1,landZ(temple.x+1,temple.y+1)+34,'Island claimed','#e2d6ff');
+  if(isOb(temple)){toast('The Obelisk of the Protector wakes. This island is yours: bridge onward from its shores, and set automatons to its groves and stone.',6500);return;}
   toast(first?'The temple stands and the island is yours. Bridges can now be built out from its shores.':'The temple stands and this island is yours. You can bridge onward from here.',6000);
 }
 function houseAt(i){for(const h of houses)if(h.i===i)return h;return null;}
@@ -1482,7 +1513,7 @@ function updateWorker(w,dt){
       const temple=w.tp;
       if(!temple||temple.state==='built'){w.task='';w.state='idle';w.t=.4;break;}
       w.phase+=dt*14; w.tinkT-=dt;
-      temple.prog=Math.min(1,temple.prog+dt/(90*Math.sqrt(Math.max(1,temple.nb||1))));
+      temple.prog=Math.min(1,temple.prog+dt/((isOb(temple)?60:90)*Math.sqrt(Math.max(1,temple.nb||1))));
       /* swarm over the works: some scale the walls, the rest scramble about on top */
       if(w.su==null){
         if(Math.random()<.45){w.climb=0;const r=Math.random()<.5;w.su=r?1.85:rnd(.2,1.8);w.sv=r?rnd(.2,1.8):1.85;}
@@ -2023,14 +2054,54 @@ function drawVillage(x,y){
   drawObelisk(x+.5,y+.5,zc);
   ctx.lineWidth=1;
 }
+/* Obelisk of the Protector: a stepped, moss-cut plinth, a tall violet-veined needle,
+   his spiked club carved into its face and a crystal heart burning at the tip */
+function drawOutpost(t){
+  const x=t.x,y=t.y,z0=landZ(x+1,y+1),z=cam.z,cx=x+1,cy=y+1;
+  ell(cx,cy,1,z0,'rgba(0,0,0,.2)');
+  box(x+.15,y+.15,x+1.85,y+1.85,z0,z0+3,'#6f7a55','#55603f','#454f33');
+  box(x+.4,y+.4,x+1.6,y+1.6,z0+3,z0+6,'#7d8a5f','#5f6b46','#4d5738');
+  /* rune stones at the four corners, glowing faintly */
+  const pul=.5+.5*Math.sin(time*2+t.x);
+  for(const c of [[.27,.27],[1.73,.27],[1.73,1.73],[.27,1.73]]){
+    box(x+c[0]-.07,y+c[1]-.07,x+c[0]+.07,y+c[1]+.07,z0+3,z0+7,'#5c6648','#4a5338','#3c442d');
+    const q=P(x+c[0],y+c[1],z0+7.5); ctx.fillStyle='rgba(180,140,255,'+(.4+.4*pul).toFixed(2)+')'; ctx.beginPath(); ctx.arc(q[0],q[1],1.6*z,0,6.2832); ctx.fill();
+  }
+  const b=.3,tp=.13,H=56,zb=z0+6;
+  const B=[P(cx-b,cy-b,zb),P(cx+b,cy-b,zb),P(cx+b,cy+b,zb),P(cx-b,cy+b,zb)],U=[P(cx-tp,cy-tp,zb+H),P(cx+tp,cy-tp,zb+H),P(cx+tp,cy+tp,zb+H),P(cx-tp,cy+tp,zb+H)];
+  poly([B[3],B[2],U[2],U[3]],mixc(PLAYER_D,'#3a4429',.45));
+  poly([B[1],B[2],U[2],U[1]],mixc(PLAYER_D,'#1d2416',.6));
+  /* the club, carved down the front face */
+  ctx.strokeStyle='rgba(206,184,255,'+(.45+.4*pul).toFixed(2)+')'; ctx.lineWidth=Math.max(1,1.5*z); ctx.beginPath();
+  {const a=P(cx,cy+b-(b-tp)*.15,zb+6),c=P(cx,cy+b-(b-tp)*.75,zb+33);ctx.moveTo(a[0],a[1]);ctx.lineTo(c[0],c[1]);
+   const hd=P(cx,cy+b-(b-tp)*.8,zb+36);ctx.moveTo(hd[0]+3*z,hd[1]);ctx.arc(hd[0],hd[1],3*z,0,6.2832);
+   for(const s of [-1,1]){ctx.moveTo(hd[0]+s*3*z,hd[1]);ctx.lineTo(hd[0]+s*5.5*z,hd[1]-1.5*z);}
+   ctx.moveTo(hd[0],hd[1]-3*z);ctx.lineTo(hd[0],hd[1]-5.5*z);}
+  ctx.stroke();
+  /* veins of the Protector's colour up the side */
+  ctx.strokeStyle='rgba(157,123,255,.55)'; ctx.lineWidth=Math.max(1,z); ctx.beginPath();
+  {const a=P(cx+b,cy-b*.3,zb+4),c=P(cx+tp,cy+tp*.2,zb+H*.8);ctx.moveTo(a[0],a[1]);ctx.quadraticCurveTo((a[0]+c[0])/2+2*z,(a[1]+c[1])/2,c[0],c[1]);} ctx.stroke(); ctx.lineWidth=1;
+  /* moss and a hanging vine */
+  ctx.fillStyle='rgba(70,100,44,.85)'; for(const c of [[.5,1.62],[1.45,1.6],[1.62,.7]]){const q=P(x+c[0],y+c[1],z0+6);ctx.beginPath();ctx.ellipse(q[0],q[1],4*z,1.8*z,0,0,6.2832);ctx.fill();}
+  const tip=P(cx,cy,zb+H+9);
+  poly([tip,U[3],U[2]],mixc(PLAYER,'#ffffff',.2*pul));
+  poly([tip,U[1],U[2]],PLAYER);
+  const gR=(24+10*pul)*z,gr=ctx.createRadialGradient(tip[0],tip[1],0,tip[0],tip[1],gR);
+  gr.addColorStop(0,'rgba(190,150,255,'+(.55+.3*pul).toFixed(2)+')'); gr.addColorStop(1,'rgba(190,150,255,0)');
+  ctx.fillStyle=gr; ctx.beginPath(); ctx.arc(tip[0],tip[1],gR,0,6.2832); ctx.fill();
+  /* motes drift up from it now and then */
+  if(Math.random()<.04)addP({x:cx+rnd(-.2,.2),y:cy+rnd(-.2,.2),z:zb+H,vx:rnd(-.05,.05),vy:rnd(-.05,.05),vz:rnd(8,16),g:0,life:rnd(1.2,2),s0:1.6,s1:.3,a:.8,c:'#c9b4ff'});
+}
 function drawTemple(temple){
   const x=temple.x,y=temple.y,z0=landZ(x+1,y+1),z=cam.z;
+  if(temple.state==='built'&&isOb(temple)){drawOutpost(temple);return;}
   if(temple.state!=='built'){
     /* building site: stakes, rope outline, rising stone and scaffold */
     const k=temple.prog;
     ctx.strokeStyle='rgba(255,255,255,.75)'; ctx.lineWidth=Math.max(1,1.4*z);
     poly([P(x+.1,y+.1,z0),P(x+1.9,y+.1,z0),P(x+1.9,y+1.9,z0),P(x+.1,y+1.9,z0)],null,ctx.strokeStyle);
-    if(k>0)box(x+.15,y+.15,x+1.85,y+1.85,z0,z0+k*16,'#7d8a5c','#5f6b43','#4e5836');
+    if(k>0){if(isOb(temple)){box(x+.4,y+.4,x+1.6,y+1.6,z0,z0+Math.min(6,k*18),'#7d8a5c','#5f6b43','#4e5836');if(k>.33)box(x+.74,y+.74,x+1.26,y+1.26,z0+6,z0+6+(k-.33)*80,mixc(PLAYER_D,'#3a4429',.45),mixc(PLAYER_D,'#3a4429',.45),mixc(PLAYER_D,'#1d2416',.6));}
+      else box(x+.15,y+.15,x+1.85,y+1.85,z0,z0+k*16,'#7d8a5c','#5f6b43','#4e5836');}
     ctx.strokeStyle='#7b5730'; ctx.lineWidth=Math.max(1,1.8*z); ctx.beginPath();
     for(const c of [[.1,.1],[1.9,.1],[1.9,1.9],[.1,1.9]]){const p0=P(x+c[0],y+c[1],z0),p1=P(x+c[0],y+c[1],z0+8+k*20);ctx.moveTo(p0[0],p0[1]);ctx.lineTo(p1[0],p1[1]);}
     ctx.stroke(); ctx.lineWidth=1;
@@ -2314,7 +2385,8 @@ function drawTempleGhost(){
   const g=templeGhost,ok=g.valid,z0=inB(g.x+1,g.y+1)?landZ(g.x+1,g.y+1)+2:LH+2;
   ctx.lineWidth=Math.max(1,1.6*cam.z);
   poly([P(g.x,g.y,z0),P(g.x+2,g.y,z0),P(g.x+2,g.y+2,z0),P(g.x,g.y+2,z0)],ok?'rgba(143,92,255,.45)':'rgba(255,110,110,.45)','rgba(255,255,255,.9)');
-  if(ok){const pk=P(g.x+1,g.y+1,z0+30);poly([pk,P(g.x+.4,g.y+1.6,z0),P(g.x+1.6,g.y+1.6,z0),P(g.x+1.6,g.y+.4,z0)],'rgba(143,92,255,.35)');}
+  if(ok&&placeKind==='obelisk'){const pk=P(g.x+1,g.y+1,z0+52);poly([pk,P(g.x+.74,g.y+1.26,z0),P(g.x+1.26,g.y+1.26,z0),P(g.x+1.26,g.y+.74,z0)],'rgba(143,92,255,.35)');}
+  else if(ok){const pk=P(g.x+1,g.y+1,z0+30);poly([pk,P(g.x+.4,g.y+1.6,z0),P(g.x+1.6,g.y+1.6,z0),P(g.x+1.6,g.y+.4,z0)],'rgba(143,92,255,.35)');}
   ctx.lineWidth=1;
 }
 function drawFx(){
@@ -2438,10 +2510,12 @@ function updateCmd(){
   const tb=$('cmdTemple');
   $('cmdHp').style.display=placingTemple?'none':'';
   if(prot)$('cmdHp').firstChild.style.width=Math.round(100*prot.hp/prot.max)+'%';
-  if(placingTemple){$('cmdWho').textContent='Tap ground near The Protector to place the temple';tb.style.display='none';$('cmdCollect').style.display='none';$('cmdClose').textContent='Cancel';}
+  if(placingTemple){$('cmdWho').textContent='Tap ground near The Protector to place the '+structName(placeKind);tb.style.display='none';$('cmdCollect').style.display='none';$('cmdClose').textContent='Cancel';}
   else{
     $('cmdWho').textContent='The Protector';
-    {const pi=protIsl();tb.style.display=pi>=0&&!summon&&!temples.some(t=>t.isl===pi)?'':'none';} $('cmdClose').textContent='Done';
+    {const pi=protIsl(),vil=villagersOn(pi),homeUp=temples.some(t=>t.state==='built'&&!isOb(t));
+     tb.style.display=pi>=0&&!summon&&!temples.some(t=>t.isl===pi)&&(vil||homeUp)?'':'none';
+     tb.textContent=vil?'Build temple':'Raise obelisk ('+OB_WOOD+' wood, '+OB_STONE+' stone)';} $('cmdClose').textContent='Done';
     {const g=protGeyser();$('cmdCollect').style.display=g&&!prot.carry&&prot.state!=='bust'?'':'none';$('cmdCollect').textContent=g&&g.sealed?'Bust open geyser':'Collect crystal';}
   }
 }
@@ -2551,7 +2625,12 @@ window.addEventListener('pointercancel',slotUp);
 
 rotBtn.addEventListener('click',rotate);
 $('cmdCollect').addEventListener('click',()=>{protCollect();});
-$('cmdTemple').addEventListener('click',()=>{const pi=protIsl();if(pi<0||temples.some(t=>t.isl===pi))return;if(!villagersOn(pi)){AU.bonk();toast(TEMPLE_WHY.villagers,4500);return;}selP=false;placingTemple=true;templeGhost=null;AU.select();updateCmd();toast('Tap a spot on the village island. The temple takes a 2 by 2 patch of ground, and once it stands the island is yours.',4500);});
+$('cmdTemple').addEventListener('click',()=>{const pi=protIsl();if(pi<0||temples.some(t=>t.isl===pi))return;
+  if(!villagersOn(pi)){
+    if(!islands[pi].linked){AU.bonk();toast(TEMPLE_WHY.cutoff,4500);return;}
+    if(wood<OB_WOOD||stone<OB_STONE){AU.bonk();toast(TEMPLE_WHY.ocost,4500);return;}
+    selP=false;placingTemple=true;placeKind='obelisk';templeGhost=null;AU.select();updateCmd();toast('Tap open ground near The Protector. His obelisk takes a 2 by 2 patch, and once it wakes this island is yours.',4500);return;}
+  placeKind='temple';selP=false;placingTemple=true;templeGhost=null;AU.select();updateCmd();toast('Tap a spot on the village island. The temple takes a 2 by 2 patch of ground, and once it stands the island is yours.',4500);});
 $('cmdClose').addEventListener('click',()=>{selP=false;placingTemple=false;templeGhost=null;updateCmd();});
 $('overNew').addEventListener('click',()=>{newGame(Math.floor(Math.random()*1e9));});
 hireBtn.addEventListener('click',hire);
@@ -2635,7 +2714,7 @@ requestAnimationFrame(loop);
 if(window.__DRIFTSPAN_TEST__){
   window.__ds={buildSA,protCollect,protGo,summon:()=>summon,skipSummon:()=>{if(summon)summon.faith=1;},protGeyser,saOrder,frame,place:()=>place(),select,rotate,hire,canPlace,tray:()=>tray,state:()=>({autos,wood,stone,harv,res,stumps,crystals,collected,workers,bridges,geysers,islands,linkedCount,home,net,ownNet,land,falling,parts,temples,temple:temples[0]||null,houses,selP,placingTemple,plans,prot,gameOver}),
     selectProt,protGo,protAt,protFall,startTemple:()=>{placingTemple=true;updateCmd();},placeTemple:(x,y)=>{templeGhost={x,y,valid:templeOK(x,y)};tryTemple();},templeOK,templeWhy,villagersOn,tapMap,P,
-    setGhost:(cells)=>{ghost={cells,valid:canPlace(cells)};},placeWhy,decor:()=>decor,setDecay:v=>{S.decay=v;},mend,newGame,AU,cam,buildGraph,essentialSet,ess:()=>ess,setTheme:v=>{S.theme=v;T=THEMES[v];bake();drawAllSlots();AU.applyTheme();}};
+    setGhost:(cells)=>{ghost={cells,valid:canPlace(cells)};},placeWhy,setRes:(w,st)=>{wood=w;stone=st;},forceBridge:cells=>{for(const i of cells)buildPlank(i);},decor:()=>decor,setDecay:v=>{S.decay=v;},mend,newGame,AU,cam,buildGraph,essentialSet,ess:()=>ess,setTheme:v=>{S.theme=v;T=THEMES[v];bake();drawAllSlots();AU.applyTheme();}};
 }
 })();
 </script>
