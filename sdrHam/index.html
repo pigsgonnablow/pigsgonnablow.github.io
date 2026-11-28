@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.10.0" data-date="2026-11-27">
+<meta name="app-version" content="1.10.1" data-date="2026-11-28">
 <title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -265,18 +265,20 @@ const pins = new THREE.LineSegments(new THREE.BufferGeometry(), new THREE.LineBa
 const ghost = new THREE.Mesh(new THREE.BoxGeometry(.07, 2.2, .07), new THREE.MeshBasicMaterial({ color: 0xfff3c4, transparent: true, opacity: .9 }));
 ghost.position.set(0, 1.1, D / 2 + .05); ghost.visible = false;   // a bright post where the hovered station sits
 scene.add(pins, ghost);
-const xOf = hz => -W / 2 + W * (hz - st.lo) / (st.hi - st.lo);
+const shown = () => scan ? scan.span : [st.lo, st.hi];   // during a scan the frozen terrain still shows the band you were on
+const xOf = hz => { const [lo, hi] = shown(); return -W / 2 + W * (hz - lo) / (hi - lo); };
 function updatePins() {
   const pts = [];
   for (const s of found.values()) if (s.tune > st.lo && s.tune < st.hi && sigShown(s)) {
     const x = xOf(s.tune); pts.push(x, 0, D / 2 + .05, x, .45, D / 2 + .05); }
   const g = pins.geometry; g.dispose(); g.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); pins.visible = sigOn && pts.length > 0 && !scan;
 }
-function showGhost(hz) { ghost.visible = hz != null && hz > st.lo && hz < st.hi; if (ghost.visible) ghost.position.x = xOf(hz); }
+function showGhost(hz) { const [lo, hi] = shown(); ghost.visible = hz != null && hz > lo && hz < hi; if (ghost.visible) ghost.position.x = xOf(hz); }
 // Swing the view toward a frequency (used when a station is picked from the list).
 let focusTo = null;
 function focusOn(hz) { if (hz > st.lo && hz < st.hi) focusTo = Math.max(-W * .3, Math.min(W * .3, xOf(hz) * .55)); }
-function stepFocus() { if (focusTo === null) return; const d = (focusTo - controls.target.x) * .12;
+const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+function stepFocus() { if (focusTo === null) return; const d = (focusTo - controls.target.x) * (calm() ? 1 : .12);
   controls.target.x += d; camera.position.x += d; if (Math.abs(focusTo - controls.target.x) < .002) focusTo = null; }
 
 function pushRow(row) {
@@ -303,13 +305,13 @@ const ro = new ResizeObserver(resize); ro.observe(stage); addEventListener('resi
 
 /* ---------- tuning + readout ---------- */
 const fmt = hz => { const k = (hz / 1000).toFixed(2); const [a, b] = k.split('.'); return a.replace(/\B(?=(\d{3})+(?!\d))/g, ' ') + '.' + b; };
-let rxTop = 30e6;   // the receiver's top frequency: 30 MHz, or 32 on receivers that go that far
+let rxTop = 32e6;   // the receiver's top frequency once connected (30 MHz, or 32 on some); before that, as far as any receiver goes
 function setTune(hz, fromLive) {
   if (hunt && !huntTuning && !fromLive) stopHunt();
   st.tune = Math.max(10000, Math.min(rxTop - 10000, Math.round(hz / 10) * 10));   // 30 MHz, or 32 on receivers that go that far
   $('dial').innerHTML = fmt(st.tune) + '<small>kHz</small>';
   if (document.activeElement !== $('freq')) $('freq').value = (st.tune / 1000).toFixed(2);
-  const span = st.hi - st.lo, x = (st.tune - st.lo) / span;
+  const [lo, hi] = shown(), span = hi - lo, x = (st.tune - lo) / span;
   uni.uTune.value = x; uni.uLo.value = st.pb[0] / span; uni.uHi.value = st.pb[1] / span;
   mark.position.x = -W / 2 + W * x; mark.visible = x >= 0 && x <= 1;
   if (!fromLive) kiwiTune(); gDirty = true; clearTimeout(listTimer); listTimer = setTimeout(renderList, 150);
@@ -318,19 +320,26 @@ function setTune(hz, fromLive) {
 const nfmt = hz => fmt(hz).split('.')[0];
 function setSpan(lo, hi, label) { st.lo = lo; st.hi = hi; $('spanLbl').textContent = `${nfmt(lo)} – ${nfmt(hi)} kHz · ${label}`; setTune(st.tune, true); updatePins(); }
 
-let down = null;
-canvas.addEventListener('pointerdown', e => down = [e.clientX, e.clientY]);
-canvas.addEventListener('pointerup', e => {
-  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 6) return;
+// A tap: one pointer, down and up in the same place. A pinch or two-finger drag is never a tap, even if one finger stays still.
+function tapper(el) { const ptrs = new Map(); let multi = false;
+  el.addEventListener('pointerdown', e => { ptrs.set(e.pointerId, [e.clientX, e.clientY]); if (ptrs.size > 1) multi = true; });
+  const end = e => { const p = ptrs.get(e.pointerId); ptrs.delete(e.pointerId);
+    const tap = !!p && !multi && e.type === 'pointerup' && Math.hypot(e.clientX - p[0], e.clientY - p[1]) <= 6;
+    if (!ptrs.size) multi = false; return tap; };
+  el.addEventListener('pointercancel', end);
+  return fn => el.addEventListener('pointerup', e => { if (end(e)) fn(e); }); }
+tapper(canvas)(e => {
   const r = canvas.getBoundingClientRect(), ray = new THREE.Raycaster();
   ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
   const hit = ray.intersectObject(plane)[0];
-  const [lo, hi] = scan ? scan.span : [st.lo, st.hi];   // during a scan the frozen terrain still shows the band you were on
+  const [lo, hi] = shown();
   if (hit) setTune(lo + hit.uv.x * (hi - lo));
 });
 document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => setTune(st.tune + b.dataset.step * 1000));
-$('freq').addEventListener('change', () => { const v = parseFloat($('freq').value); if (v > 0) setTune(v * 1000); });
+$('freq').addEventListener('change', () => { const v = parseFloat($('freq').value.trim().replace(',', '.'));   // many keyboards type a decimal comma
+  if (v > 0) setTune(v * 1000); $('freq').value = (st.tune / 1000).toFixed(2); });   // the box always ends up showing what's tuned
 addEventListener('keydown', e => { if (e.target.matches('input:not([type=checkbox]):not([type=radio]),select,textarea')) return;
+  if (e.altKey || e.ctrlKey || e.metaKey || document.body.classList.contains('landing')) return;   // browser shortcuts, and no dial on the landing view
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); setTune(st.tune + (e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 1000 : 100)); } });
 
 /* ---------- audio out ---------- */
@@ -638,7 +647,7 @@ noiseUi();
 $('sigMin').onchange = () => { saveFilters(); renderSignals(true); updatePins(); };
 let sigPress = false, sigHover = false, sigHtml = '', bandHtml = '', sigTimer = null, fromList = false;
 // Keep the station you're tuned to in view in the list (not when you just picked it there yourself).
-function revealOn() { if (fromList) { fromList = false; return; } const b = $('sigList').querySelector('button.on'); if (b) b.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+function revealOn() { if (fromList) { fromList = false; return; } const b = $('sigList').querySelector('button.on'); if (b) b.scrollIntoView({ block: 'nearest', behavior: calm() ? 'auto' : 'smooth' }); }
 $('sigList').addEventListener('pointerover', e => { const b = e.target.closest('button'); const s = b && found.get(+b.dataset.k); showGhost(s ? s.tune : null); });
 $('sigList').addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') sigHover = true; });
 $('sigList').addEventListener('pointerleave', () => { showGhost(null); sigHover = false; renderSignals(); });
@@ -652,7 +661,7 @@ function renderSignals(force) {
   for (const s of strong) kindCount.set(kindOf(s), (kindCount.get(kindOf(s)) || 0) + 1);
   const chips = `<button class="all" data-kind="all" aria-pressed="${allKinds()}">All<small>${strong.length}</small></button>` +
     KINDS.map(([k, label]) => `<button data-kind="${k}" aria-pressed="${showKinds.has(k)}" title="${allKinds() ? `Show only ${label.toLowerCase()}` : showKinds.has(k) ? `Hide ${label.toLowerCase()}` : `Also show ${label.toLowerCase()}`}">${label}<small>${kindCount.get(k) || 0}</small></button>`).join('');
-  if ($('sigKinds').innerHTML !== chips) $('sigKinds').innerHTML = chips;
+  if ($('sigKinds').dataset.html !== chips) { $('sigKinds').dataset.html = chips; swapHtml($('sigKinds'), chips, 'data-kind'); }
   const all = strong.filter(s => showKinds.has(kindOf(s))).sort((a, b) => b.snr - a.snr), counts = new Map();
   for (const s of all) { const k = s.band.split(' · ')[0] || 'Outside the usual bands'; counts.set(k, (counts.get(k) || 0) + 1); }
   const sel = $('sigBand'), want = sel.value;
@@ -696,7 +705,7 @@ $('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) retu
 // Find a voice: listen to each voice signal in turn (the most recent and strongest first) and stop on the first
 // where someone is actually talking. Conversations come and go, so a signal seen a minute ago may be quiet now.
 let hunt = null, huntProg = null, huntMax = 0;   // huntProg: which spot the search is on, for its progress ring
-function stopHunt(msg) { hunt = null; probe = null; ring('voiceBtn', null); $('voiceBtn').textContent = [...found.values()].some(s => s.heardAt && Date.now() - s.heardAt < 90e3) ? 'Find another voice' : 'Find a voice'; if (msg) status(msg); renderSignals(true); }
+function stopHunt(msg) { hunt = null; probe = null; ring('voiceBtn', null); $('voiceBtn').textContent = [...found.values()].some(s => s.heardAt && Date.now() - s.heardAt < 90e3) ? 'Find another voice' : 'Find a voice'; status(msg || 'Stopped looking for a voice.'); renderSignals(true); }
 // Listen at one place: tune, let old audio drain, gather ~4.5 s, score it. null if interrupted.
 async function listenAt(me, s) {
   huntTuning = true; tuneToSignal(s); huntTuning = false; renderSignals(true);
@@ -723,7 +732,7 @@ function sweepSpots(skip) {
   }
   return out.sort((x, y) => y.m - x.m).slice(0, 30);
 }
-if (/[?&]debug\b/.test(location.search)) window.__wr = { det, found, sweepSpots, st, handsOff: ms => { lastAct = Date.now() - ms; }, get head() { return head; }, get spinning() { return !!(gCtl && gCtl.autoRotate); } };   // for tests and troubleshooting
+if (/[?&]debug\b/.test(location.search)) window.__wr = { det, found, sweepSpots, st, handsOff: ms => { lastAct = Date.now() - ms; }, get head() { return head; }, get spinning() { return !!(gCtl && gCtl.autoRotate); }, pick: o => select(RX.find(r => r.origin === o), true) };   // for tests and troubleshooting
 async function findVoice() {
   if (hunt) return stopHunt('Stopped listening for voices.');
   huntProg = null;
@@ -816,6 +825,9 @@ $('scanBtn').onclick = () => {
 /* ---------- receiver directory ---------- */
 const API = (document.querySelector('meta[name=radio-api]')?.content || '').replace(/\/+$/, '');
 const RELAY = (API || location.origin).replace(/^http/, 'ws') + '/kiwi-relay';
+// Replace a list's buttons without losing keyboard focus: put it back on the button with the same key.
+function swapHtml(el, html, key) { const a = document.activeElement, k = a && el.contains(a) ? a.getAttribute(key) : null;
+  el.innerHTML = html; if (k !== null) { const b = el.querySelector(`[${key}="${CSS.escape(k)}"]`); if (b) b.focus(); } }
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 let dirWait = '', RX = [], dirMode = 'loading', selected = null, tried = new Set(), current = null, fallbackNote = '';
 async function loadDir() {
@@ -864,13 +876,15 @@ let noApps = {}; try { const v = JSON.parse(localStorage.getItem('wr.noApps') ||
 const hostOf = o => { try { return new URL(o).hostname; } catch { return o; } };
 // A "no outside apps" setting is the owner's policy, and owners often run several receivers on one host (ports
 // 8073, 8074, …): treat those alike. A limit above 0 (slots merely taken) applies to that one receiver only.
-const appLimited = r => { if (!r) return null; const now = Date.now(), a = noApps[r.origin], h = noApps['host:' + hostOf(r.origin)];
-  return a && a.until > now ? a : h && h.until > now ? h : null; };
+// The host-wide memory is only a guess, used for receivers whose own setting the server doesn't know yet.
+const ownLimit = r => { const a = r && noApps[r.origin]; return a && a.until > Date.now() ? a : null; };
+const appLimited = r => { if (!r) return null; const h = noApps['host:' + hostOf(r.origin)];
+  return ownLimit(r) || (r.apps == null && h && h.until > Date.now() ? h : null); };
 function rememberNoApps(origin, limit) {
   noApps[origin] = { limit, until: Date.now() + (limit > 0 ? 30 * 60e3 : 7 * 86400e3) };
   if (limit === 0) noApps['host:' + hostOf(origin)] = noApps[origin];
   for (const k in noApps) if (noApps[k].until < Date.now()) delete noApps[k];
-  try { localStorage.setItem('wr.noApps', JSON.stringify(noApps)); } catch {} gDirty = true; }
+  try { localStorage.setItem('wr.noApps', JSON.stringify(noApps)); } catch {} gDirty = true; renderList(true); }
 const usable = r => !r.offline && r.lat !== null && r.lon !== null && Number.isFinite(+r.lat) && Number.isFinite(+r.lon);
 function gcKm(a, b) { const R = Math.PI / 180, s = Math.sin, c = Math.cos;
   const h = s((b.lat - a.lat) * R / 2) ** 2 + c(a.lat * R) * c(b.lat * R) * s((b.lon - a.lon) * R / 2) ** 2; return 12742 * Math.asin(Math.min(1, Math.sqrt(h))); }
@@ -893,16 +907,16 @@ function renderList(force) {
   const list = ranked().slice(0, 12), near = $('sort').value === 'near';
   const html = list.length ? list.map((r, i) => `<li><button data-i="${i}" class="${r === selected ? 'sel' : ''}">
     <span class="nm">${esc(r.name)}</span><span class="lc">${esc(r.loc || r.antenna || r.id)}</span>
-    <span class="sl">${appLimited(r) ? '<b>web page only</b>' : `<b>${free(r)}/${r.max}</b> free`}<br>${near ? (isFinite(r._km) ? Math.round(r._km).toLocaleString() + ' km' : 'no GPS') : r.snr != null ? 'SNR ' + r.snr + ' dB' : ''}</span></button></li>`).join('')
+    <span class="sl">${ownLimit(r) ? '<b>web page only</b>' : `<b>${free(r)}/${r.max}</b> free`}<br>${near ? (isFinite(r._km) ? Math.round(r._km).toLocaleString() + ' km' : 'no GPS') : r.snr != null ? 'SNR ' + r.snr + ' dB' : ''}</span></button></li>`).join('')
     : `<li class="empty">${RX.length ? 'No receivers match. Untick "Free slots only" or tune elsewhere.' : dirMode === 'loading' ? '<span class="spin"></span>Loading receivers…' : 'No receiver list available.'}</li>`;
   $('rxList').onclick = e => { const b = e.target.closest('button'); if (b) select(list[+b.dataset.i], true); };
-  if (html !== rxHtml) { rxHtml = html; $('rxList').innerHTML = html; }   // only touch the list when it actually changed
+  if (html !== rxHtml) { rxHtml = html; swapHtml($('rxList'), html, 'data-i'); }   // only touch the list when it actually changed
 }
 function select(r, fly, quiet) {
   if (!quiet && retryTimer && r !== current) disconnect(`Stopped reconnecting to ${current ? current.name : 'the receiver'}.`);
   selected = r; connectBtn(); gDirty = true; renderList(true); if (!r) { $('rxCard').hidden = true; return; }
   $('rxCard').hidden = false; $('rxName').textContent = r.name;
-  $('rxMeta').textContent = [r.loc, appLimited(r) ? (appLimited(r).limit ? 'its few slots for apps were taken' : 'only allows its own web page') : `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
+  $('rxMeta').textContent = [r.loc, ownLimit(r) ? (ownLimit(r).limit ? 'its few slots for apps were taken' : 'only allows its own web page') : `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
     `${(r.lo / 1e6).toFixed(1)}–${(r.hi / 1e6).toFixed(1)} MHz`].filter(Boolean).join(' · ');
   if (fly && usable(r)) flyTo(r.lat, r.lon);
 }
@@ -986,9 +1000,9 @@ function initGlobe() {
   gScene.add(gPts, gSel);
   const ro2 = new ResizeObserver(() => { const b = $('globeBox'); gR.setSize(b.clientWidth, b.clientHeight, false); gCam.aspect = b.clientWidth / b.clientHeight; gCam.updateProjectionMatrix(); });
   ro2.observe($('globeBox'));
-  let gd = null, hoverQ = null, tipTimer = null;
-  cv.addEventListener('pointerdown', e => { gd = [e.clientX, e.clientY]; $('gTip').hidden = true; });
-  cv.addEventListener('pointerup', e => { if (!gd || Math.hypot(e.clientX - gd[0], e.clientY - gd[1]) > 6) return;
+  let hoverQ = null, tipTimer = null;
+  cv.addEventListener('pointerdown', () => { $('gTip').hidden = true; });
+  tapper(cv)(e => {
     const r = cv.getBoundingClientRect(), h = pickAt(e.clientX - r.left, e.clientY - r.top); if (!h) return;
     // Several receivers often share one site: clicking the same spot again steps to the next one there.
     const i = h.here.indexOf(selected), next = h.here[i >= 0 ? (i + 1) % h.here.length : 0];
@@ -1063,7 +1077,7 @@ function renderGlobe() {
   gCtl.rotateSpeed = Math.max(.03, Math.min(.5, (dist - 1) * .22));   // slower drag near the surface
   gCtl.zoomSpeed = dist < 1.6 ? .5 : 1;
   if (coastHi === 'no' && dist < 2.3) loadHiCoast();
-  if (gSel.visible) gSel.material.uniforms.uPx.value = gR.getPixelRatio() * (1 + .25 * Math.sin(performance.now() / 250));
+  if (gSel.visible) gSel.material.uniforms.uPx.value = gR.getPixelRatio() * (calm() ? 1.1 : 1 + .25 * Math.sin(performance.now() / 250));
   gCtl.autoRotateSpeed = .35 * Math.max(.08, Math.min(1, (gCam.position.length() - 1) / 2.3));   // slower when zoomed in close
   gCtl.update(); gR.render(gScene, gCam);
 }
@@ -1104,7 +1118,7 @@ function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
   idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
 function kiwiClose() { wfWait = false; clearTimeout(tuneTimer); tuneTimer = null; if (scan) unScan(); if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
-  $('connectHost').textContent = 'Connect'; connectBtn(); scanIdle();
+  $('connectHost').textContent = 'Connect'; connectBtn(); scanIdle(); rxTop = 32e6;
   if (snd === null && $('what').textContent.startsWith('Live')) { $('what').textContent = 'Not connected'; setSpan(st.lo, st.hi, 'not connected'); } }
 // The main button always says what pressing it will do.
 let checking = false;
@@ -1117,10 +1131,12 @@ function disconnect(msg) { connectSeq++; checking = false; clearTimeout(retryTim
 function endSession(msg) { clearTimeout(retryTimer); retryTimer = null; kiwiClose(); current = null; connectBtn(); status(msg, true); }
 // If the receiver you picked can't take you, move to the closest free one and say so plainly.
 function tryNext(why, from) {
-  const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0 && !appLimited(r));
+  const live = snd && current;   // already listening somewhere: never "switch" back to it, just stay
+  const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0 && !appLimited(r) && !(live && r.origin === current.origin));
   if (from && usable(from)) pool.sort((a, b) => (usable(a) ? gcKm(from, a) : 1e9) - (usable(b) ? gcKm(from, b) : 1e9));
   const next = pool[0];
-  if (tried.size >= 3 || !next) { if (!snd) current = null; connectBtn(); return status(`${why} No nearby receiver answered either; pick another one.`, true); }
+  if (tried.size >= 3 || !next) { if (!snd) current = null; connectBtn();
+    return status(live ? `${why} Stayed on ${current.name}.` : `${why} No nearby receiver answered either; pick another one.`, true); }
   const km = from && usable(from) && usable(next) ? ` (${Math.round(gcKm(from, next)).toLocaleString()} km away)` : '';
   fallbackNote = `${why} Switched to the nearest free receiver${km}.`;
   status(`${why} Trying the nearest free one instead: ${next.name}${km}…`); select(next, true); connectRx(next, true, from);
@@ -1129,7 +1145,6 @@ let connectSeq = 0;
 async function connectRx(rx, auto, origFrom) {
   const seq = ++connectSeq; checking = false;
   if (!auto) { tried = new Set(); fallbackNote = ''; drops = []; } tried.add(rx.origin); const from = origFrom || rx;   // `current` changes only once the switch really happens
-  if (!covers(rx)) setTune(Math.min(Math.max(st.tune, rx.lo + 5000), rx.hi - 5000), true);
   const listed = dirMode === 'server' && RX.some(r => r.origin === rx.origin);
   // Use the relay only when the browser can't connect itself: an https page can't open a plain ws:// receiver.
   // Direct connections spread load and keep each listener's own IP, which receiver owners use for fair-use limits.
@@ -1147,7 +1162,8 @@ async function connectRx(rx, auto, origFrom) {
     if (seq !== connectSeq) return;
     checking = false; connectBtn(); }
   if (seq !== connectSeq) return;   // cancelled, or another receiver was picked meanwhile
-  current = rx; ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
+  current = rx; if (!covers(rx)) setTune(Math.min(Math.max(st.tune, rx.lo + 5000), rx.hi - 5000), true);
+  ensureAudio(); kiwiOpen(rx.origin, viaRelay, from);
 }
 // Messages a receiver sends just before refusing or ending a session (as handled by the official kiwiclient).
 const BADP = { 1: 'needs a password (or its password-free slots are all taken).', 2: 'is still starting up. Try again in a moment.',
@@ -1194,7 +1210,7 @@ function wfRow(d, flags) {
 const WF_SETTLE = 10;
 function kiwiOpen(origin, viaRelay, from, retry = 0) {
   if (!retry) { clearTimeout(retryTimer); retryTimer = null; }   // a new session replaces any pending reconnect
-  kiwiClose(); rxTop = 30e6; $('what').textContent = 'Connecting…'; wfWait = 'Connecting to the receiver…'; const me = session = {}; kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
+  kiwiClose(); rxTop = 30e6; setSpan(st.lo, st.hi, 'connecting'); $('what').textContent = 'Connecting…'; wfWait = 'Connecting to the receiver…'; const me = session = {}; kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
   if (!retry) found.clear();   // a new receiver hears a different band; a reconnect keeps what was found
   const seq = connectSeq, ts = Date.now(), wsBase = origin.replace(/^http/, 'ws'), name = current ? current.name : 'The receiver';
   const url = s => viaRelay ? `${RELAY}?target=${encodeURIComponent(`${wsBase}/kiwi/${ts}/${s}`)}` : `${wsBase}/kiwi/${ts}/${s}`;
@@ -1227,7 +1243,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     if (current) return tryNext(`${current.name} ${why}`, from);
     status(`That receiver ${why}${!viaRelay && location.protocol === 'https:' ? ' A page served over https can only reach receivers in the directory.' : ''}`, true); };
   try { snd = new WebSocket(url('SND')); } catch { return fail("couldn't be reached."); }
-  const S = snd; let wfTries = 0;
+  const S = snd; let wfTries = 0, wfDrops = [];   // waterfall reopens: at most 3 in any 5 minutes, however well it flowed in between
   // Keepalives ride on incoming data, once a second per socket, like the official client: browsers slow timers in
   // background tabs, but they still deliver messages. The 5-second timer below is only a backstop.
   const ka = w => { const t = Date.now(); if (w.readyState === 1 && t - (w.ka || 0) >= 1000) { w.ka = t; w.send('SET keepalive'); } };
@@ -1284,9 +1300,11 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
   function openWf() {
     let F; try { F = new WebSocket(url('W/F')); } catch { return; }
     wf = F; F.rows = 0; F.binaryType = 'arraybuffer'; F.onopen = () => { F.send('SET auth t=kiwi p='); renderSignals(); };   // Scan all bands needs this socket open
-    F.onclose = () => { if (F !== wf) return; wf = null; stopScan('waterfall paused'); detReset(); renderSignals();
+    F.onclose = e => { if (F !== wf) return; wf = null; stopScan('waterfall paused'); detReset(); renderSignals();
       if (!live || S !== snd) return;   // before live: the audio connection decides what happens
-      if (wfTries < 3) { wfTries++; status(`The waterfall stream dropped; reopening it (try ${wfTries} of 3). Audio continues.`, true);
+      if (e.code === 4429) { wfWait = false; return status('The relay turned the waterfall away (' + (e.reason || 'limit reached') + '); audio continues.', true); }   // a refusal, not a drop: asking again won't help
+      wfDrops = wfDrops.filter(t => Date.now() - t < 5 * 60e3); wfDrops.push(Date.now());
+      if (wfTries < 3 && wfDrops.length <= 3) { wfTries++; status(`The waterfall stream dropped; reopening it (try ${wfTries} of 3). Audio continues.`, true);
         const w = wfWait = 'Reopening the waterfall…'; setTimeout(() => { if (wfWait === w && S === snd) wfWait = false; }, 1500 * wfTries + 10000);   // never left up if rows don't come
         setTimeout(() => { if (S === snd && !wf) openWf(); }, 1500 * wfTries); }
       else { wfWait = false; status('The receiver stopped sending its waterfall; audio continues.', true); } };
@@ -1332,7 +1350,7 @@ $('connectHost').onclick = () => {
   const proto = /^(wss|https)$/i.test(m[1] || '') ? 'https' : 'http', origin = `${proto}://${m[2].toLowerCase()}:${m[3] || (proto === 'https' ? 443 : 80)}`;
   const known = RX.find(r => r.origin === origin);
   if (known) { select(known, true); return connectRx(known, false); }
-  connectSeq++; checking = false; current = null; ensureAudio(); kiwiOpen(origin, false, null);
+  connectSeq++; checking = false; current = null; tried = new Set(); fallbackNote = ''; drops = []; ensureAudio(); kiwiOpen(origin, false, null);
 };
 $('mode').onchange = () => { flushAudio(); kiwiTune(); };
 initGlobe(); loadDir();
@@ -1364,8 +1382,13 @@ function syncBusy() {
   ring('voiceBtn', hp, huntProg && huntProg.weak ? 'Stop · weaker signals' : 'Stop'); ring('scanBtn', sp, 'Stop scan');
   tog('voiceBtn', hunt && hp === null); tog('scanBtn', false); tog('sigNote', scan); tog('dirNote', dirMode === 'loading');
   $('globeLoad').hidden = dirMode !== 'loading'; if (dirWait && $('globeLoadText').textContent !== dirWait) $('globeLoadText').textContent = dirWait;
-  const wait = checking ? 'Checking the receiver has a free slot…' : sp !== null ? `Scanning all bands… ${Math.min(99, Math.floor(sp * 100))}%\nThe waterfall carries on when the scan is done.` : wfWait;
-  $('stageLoad').hidden = !wait; if (wait && $('stageLoadText').textContent !== wait) $('stageLoadText').textContent = wait;
+  // The overlay is a live region: screen readers hear each new message once. The scan's percentage sits in an
+  // aria-hidden span, so its many small changes aren't read out.
+  const wait = checking ? 'Checking the receiver has a free slot…' : sp !== null ? 'Scanning all bands… \u0000\nThe waterfall carries on when the scan is done.' : wfWait;
+  $('stageLoad').hidden = !wait;
+  if (wait && $('stageLoadText').dataset.msg !== wait) { $('stageLoadText').dataset.msg = wait; const [a, b = null] = wait.split('\u0000');
+    $('stageLoadText').innerHTML = esc(a) + (b === null ? '' : '<span id="stagePct" aria-hidden="true"></span>' + esc(b)); }
+  if (sp !== null && $('stagePct')) { const t = Math.min(99, Math.floor(sp * 100)) + '%'; if ($('stagePct').textContent !== t) $('stagePct').textContent = t; }
   $('stageSpin').hidden = sp !== null; $('stageRing').hidden = sp === null; if (sp !== null) $('stageRing').style.setProperty('--p', Math.min(99, Math.floor(sp * 100)));
 }
 setInterval(syncBusy, 200); syncBusy();
@@ -1378,7 +1401,7 @@ setInterval(syncBusy, 200); syncBusy();
 /* ---------- loop ---------- */
 setTune(st.tune, true);
 renderer.setAnimationLoop(() => {
-  stepFocus(); controls.update(); renderer.render(scene, camera);
+  if (!document.body.classList.contains('landing')) { stepFocus(); controls.update(); renderer.render(scene, camera); }   // the terrain is hidden on the landing view
   renderGlobe();
 });
 }
