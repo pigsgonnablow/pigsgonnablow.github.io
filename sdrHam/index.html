@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.9.1" data-date="2026-11-27">
+<meta name="app-version" content="1.10.0" data-date="2026-11-27">
 <title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -874,11 +874,15 @@ function rememberNoApps(origin, limit) {
 const usable = r => !r.offline && r.lat !== null && r.lon !== null && Number.isFinite(+r.lat) && Number.isFinite(+r.lon);
 function gcKm(a, b) { const R = Math.PI / 180, s = Math.sin, c = Math.cos;
   const h = s((b.lat - a.lat) * R / 2) ** 2 + c(a.lat * R) * c(b.lat * R) * s((b.lon - a.lon) * R / 2) ** 2; return 12742 * Math.asin(Math.min(1, Math.sqrt(h))); }
+// A receiver this site can't use: its owner allows no apps (its /status says ext_api=0, as the server found), or it
+// turned us away recently (remembered in this browser).
+// Per receiver: the server now knows each one's own setting, so a kick from one doesn't hide its neighbours on the same host.
+const noApp = r => r.apps === 0 || !!(noApps[r.origin] && noApps[r.origin].until > Date.now());
 function ranked() {
   const list = RX.filter(r => !r.offline && covers(r) && (!$('freeOnly').checked || free(r) > 0));
   if ($('sort').value === 'near') { const c = viewCenter(); for (const r of list) r._km = usable(r) ? gcKm(c, r) : Infinity; list.sort((a, b) => a._km - b._km); }
   else list.sort((a, b) => ((b.snr ?? 10) + 3 * Math.min(free(b), 3)) - ((a.snr ?? 10) + 3 * Math.min(free(a), 3)));
-  return [...list.filter(r => !appLimited(r)), ...list.filter(appLimited)];   // receivers that turned us away go last
+  return list.filter(r => !noApp(r));   // receivers whose owners don't allow apps aren't offered at all
 }
 let listTimer = null, nearTimer = null;
 let rxHtml = '', rxPress = false;
@@ -1034,7 +1038,7 @@ function putAttr(g, name, arr, k) { const a = g.getAttribute(name);
   if (a && a.array.length === arr.length) { a.array.set(arr); a.needsUpdate = true; return; }
   if (a) g.dispose(); g.setAttribute(name, new THREE.BufferAttribute(arr, k)); }
 function rebuildPoints() {
-  gDirty = false; const list = RX.filter(usable), n = list.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), size = new Float32Array(n);
+  gDirty = false; const list = RX.filter(r => usable(r) && !noApp(r)), n = list.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), size = new Float32Array(n);
   list.forEach((r, i) => { ll(r.lat, r.lon, 1.01).toArray(pos, i * 3);
     const c = !covers(r) ? COL.off : free(r) === 0 ? COL.full : free(r) === 1 ? COL.last : COL.free; c.toArray(col, i * 3);
     size[i] = !covers(r) || ($('freeOnly').checked && free(r) === 0) ? 4 : 7; });
@@ -1137,6 +1141,7 @@ async function connectRx(rx, auto, origFrom) {
       if (seq !== connectSeq) return;
       checking = false;
       if (!s.error) { rx.users = s.users; if (s.max) rx.max = s.max; gDirty = true; if (selected === rx) select(rx, false, true); }
+      if (!s.error && s.apps === 0) { rememberNoApps(rx.origin, 0); return tryNext(`${rx.name} only allows its own web page, not apps like this one.`, from); }
       if (!s.error && (s.offline || (s.max && s.users >= s.max))) return tryNext(`${rx.name} is full right now.`, from);
     } catch {}
     if (seq !== connectSeq) return;
@@ -1231,6 +1236,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
   S.onclose = e => { if (S !== snd) return;
     if (e.code === 4429 && e.reason === 'receiver busy on relay') return fail('has no free slots on this site’s relay right now.');
     if (e.code === 4429 && e.reason === 'receiver refused recently') return fail('turned this site away a moment ago (full, down, or not accepting apps).');
+    if (e.code === 4429 && e.reason === 'receiver does not accept apps') { rememberNoApps(origin, 0); return fail('only allows its own web page, not apps like this one.'); }
     if (e.code === 4429) return endSession({
       'relay full': 'This site’s relay is full right now. Try again in a few minutes.',
       'daily limit for your address': 'You’ve reached today’s listening limit on this site (it keeps the free service running). It resets at midnight UTC.',
