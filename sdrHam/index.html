@@ -3,10 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Where the Waterfall Radio server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
+<!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.8.1" data-date="2026-11-27">
-<title>Waterfall Radio</title>
+<meta name="app-version" content="1.9.0" data-date="2026-11-27">
+<title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
 <style>
@@ -151,7 +151,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
 </head>
 <body class="landing">
 <header class="band"><div class="wrap">
-  <h1>Waterfall Radio</h1>
+  <h1>Skydial</h1>
   <p class="sub"><span class="onland">Live radio from receivers around the world. Pick one on the globe or from the list to start listening.</span><span class="onlive">The radio band as a 3D landscape. Every ridge is a signal; tap one to tune in and hear it.</span></p>
 </div></header>
 
@@ -213,7 +213,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
   </div>
 </div></section>
 
-<footer class="ver"><div class="wrap" id="verLine">Waterfall Radio</div></footer>
+<footer class="ver"><div class="wrap" id="verLine">Skydial</div></footer>
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
@@ -658,7 +658,7 @@ function renderSignals(force) {
   const opts = `<option value="">All bands (${all.length})</option>` + [...counts].sort((a, b) => b[1] - a[1]).map(([k, c]) => `<option value="${k}">${k} (${c})</option>`).join('');
   if (opts !== bandHtml && document.activeElement !== sel) { bandHtml = opts; sel.innerHTML = opts; sel.value = counts.has(want) ? want : ''; }  // never while it's open
   const list = all.filter(s => !sel.value || (s.band.split(' · ')[0] || 'Outside the usual bands') === sel.value).slice(0, 80);
-  const liveReady = snd && wf;
+  const liveReady = snd && wf && wf.readyState === 1;
   $('scanBtn').disabled = !liveReady && !scan;
   if (!scan) $('scanBtn').textContent = liveReady ? 'Scan all bands' : 'Scan (live receivers only)';   // while scanning, its progress ring owns the label
   $('sigNote').textContent = scan ? `Scanning ${bandsAt((det.lo + det.hi) / 2).map(b => b[2]).join(' · ') || 'between bands'} (${scan.i} of ${scan.plan.length})…`
@@ -695,7 +695,7 @@ $('sigList').onclick = e => { const b = e.target.closest('button'); if (!b) retu
 // Find a voice: listen to each voice signal in turn (the most recent and strongest first) and stop on the first
 // where someone is actually talking. Conversations come and go, so a signal seen a minute ago may be quiet now.
 let hunt = null, huntProg = null, huntMax = 0;   // huntProg: which spot the search is on, for its progress ring
-function stopHunt(msg) { hunt = null; probe = null; $('voiceBtn').textContent = [...found.values()].some(s => s.heardAt && Date.now() - s.heardAt < 90e3) ? 'Find another voice' : 'Find a voice'; if (msg) status(msg); renderSignals(true); }
+function stopHunt(msg) { hunt = null; probe = null; ring('voiceBtn', null); $('voiceBtn').textContent = [...found.values()].some(s => s.heardAt && Date.now() - s.heardAt < 90e3) ? 'Find another voice' : 'Find a voice'; if (msg) status(msg); renderSignals(true); }
 // Listen at one place: tune, let old audio drain, gather ~4.5 s, score it. null if interrupted.
 async function listenAt(me, s) {
   huntTuning = true; tuneToSignal(s); huntTuning = false; renderSignals(true);
@@ -790,7 +790,7 @@ function scanPlan() {
 }
 function wfGoto(cf) { const span = kiwiBw / 2 ** ZOOM;
   wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
-const scanIdle = () => { $('scanBtn').textContent = wf ? 'Scan all bands' : 'Scan (live receivers only)'; $('scanBtn').disabled = !wf; };
+const scanIdle = () => { ring('scanBtn', null); $('scanBtn').textContent = wf ? 'Scan all bands' : 'Scan (live receivers only)'; $('scanBtn').disabled = !wf; };
 function endScan() { if (!scan) return; clearTimeout(scan.timer); scan = null; scanIdle();
   if (wf && wf.readyState === 1) kiwiCenter(); else setSpan(st.lo, st.hi, 'waterfall paused'); renderSignals(); }
 // Stop a scan without asking the receiver for anything (its waterfall connection is gone).
@@ -807,7 +807,7 @@ $('scanBtn').onclick = () => {
     const wait = () => { try { if (!scan) return; if ((det.lo === st.lo && det.rows.length >= 12) || performance.now() - t0 > 6000) { detFinalize(); step(); }
       else scan.timer = setTimeout(wait, 250); } catch (err) { console.error(err); endScan(); } };
     scan.timer = setTimeout(wait, 400); } catch (err) { console.error(err); endScan(); } };
-  step();
+  step(); syncBusy();   // show the progress ring at once, not at the next tick
 };
 
 /* ---------- receiver directory ---------- */
@@ -829,7 +829,7 @@ async function loadDir() {
       gDirty = true; renderList(); return;
     }
     // Nothing that looks like our server (no API set and no answer, or a plain 404): say so right away.
-    if ((!API && !res) || (res && res.status === 404)) return noList("Can't load the receiver list: the Waterfall Radio server isn't reachable from here.");
+    if ((!API && !res) || (res && res.status === 404)) return noList("Can't load the receiver list: the Skydial server isn't reachable from here.");
     const secs = Math.round((Date.now() - t0) / 1000);
     if (secs > 100) return noList("The server didn't wake up. Reload the page to try again.");
     $('dirNote').textContent = d ? `The server is fetching the receiver list… ${secs} s` : `Waking the server… ${secs} s (usually under a minute)`;
@@ -1152,6 +1152,26 @@ const jitter = ms => Math.round(ms * (0.75 + Math.random() * 0.5));   // so ever
 let drops = [], retryTimer = null;                                  // times of recent unexpected drops, to stop retrying a receiver that keeps dropping
 // retry: 0 for a fresh connection, 1..3 when reconnecting after an unexpected drop (same receiver, frequency and mode).
 let session = null;   // identity of the live session (kept across its own reconnects)
+// KiwiSDR compression: IMA ADPCM, 4 bits a sample, two a byte, low nibble first (checked against a live receiver).
+const ADPCM_STEP = [7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767];
+const ADPCM_ADJ = [-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8];
+function adpcmDecode(bytes, st) {
+  const out = new Int16Array(bytes.length * 2); let k = 0, { i, p } = st;
+  for (let n = 0; n < bytes.length; n++) for (let h = 0; h < 2; h++) {
+    const c = h ? bytes[n] >> 4 : bytes[n] & 15, step = ADPCM_STEP[i];
+    let d = step >> 3; if (c & 1) d += step >> 2; if (c & 2) d += step >> 1; if (c & 4) d += step; if (c & 8) d = -d;
+    p = Math.max(-32768, Math.min(32767, p + d)); i = Math.max(0, Math.min(88, i + ADPCM_ADJ[c])); out[k++] = p; }
+  st.i = i; st.p = p; return out;
+}
+// A waterfall row: compressed rows are half the size, each one decoded on its own as (value - 128) * 256. The decoder
+// takes a few bins to catch up at the start of each row, so those take the first settled value (no dark edge).
+function wfRow(d) {
+  if (d.length * 2 !== wfFft) return d;
+  const x = adpcmDecode(d, { i: 0, p: 0 }), r = new Uint8Array(x.length);
+  for (let n = 0; n < x.length; n++) r[n] = Math.max(0, Math.min(255, (x[n] >> 8) + 128));
+  r.fill(r[WF_SETTLE], 0, WF_SETTLE); return r;
+}
+const WF_SETTLE = 10;
 function kiwiOpen(origin, viaRelay, from, retry = 0) {
   if (!retry) { clearTimeout(retryTimer); retryTimer = null; }   // a new session replaces any pending reconnect
   kiwiClose(); rxTop = 30e6; $('what').textContent = 'Connecting…'; wfWait = 'Connecting to the receiver…'; const me = session = {}; kiwiBw = 30e6; kiwiRate = 12000; wfFft = 1024; wfZmax = 14; wfTrust = true;
@@ -1161,6 +1181,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
   // "live" means the receiver accepted us (it sent audio_rate). Anything that ends the attempt before that is a failed
   // connection: a refused socket, the relay closing because it couldn't reach the receiver, a busy or password reply, or silence.
   let live = false, failed = false, busy = false, ended = null, gotRow = false, guard = null, wfGuard = null;
+  const sndAdpcm = { i: 0, p: 0 };   // the audio decoder's state runs on from frame to frame
   const reconnect = (why, n) => {   // unexpected drop: try the same receiver again a few times, then give up and say so
     kiwiClose();
     if (n > RETRY_MS.length) return endSession(`${why} Couldn't reconnect to ${name}. Pick it again or try another.`);
@@ -1199,7 +1220,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
       'relay full': 'This site’s relay is full right now. Try again in a few minutes.',
       'daily limit for your address': 'You’ve reached today’s listening limit on this site (it keeps the free service running). It resets at midnight UTC.',
       'relay daily limit': 'This site has used today’s data allowance for its free relay. It resets at midnight UTC; sorry about that.',
-    }[e.reason] || 'Too many connections from your network through this site right now. Close other Waterfall Radio tabs or wait a minute.');
+    }[e.reason] || 'Too many connections from your network through this site right now. Close other Skydial tabs or wait a minute.');
     if (!live) return fail(ended || (busy ? 'is full right now.' : "didn't accept the connection."));
     if (ended) return endSession(`${name} ${ended}`);            // the receiver said why: respect it
     if (e.reason === 'session time limit') return endSession('The relay’s 4-hour session limit was reached. Connect again to keep listening.');
@@ -1223,17 +1244,25 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
       if (m.audio_rate && !live) { live = true; clearTimeout(guard); if (wfWait) wfWait = 'Loading the waterfall…';
         S.send(`SET AR OK in=${m.audio_rate} out=44100`); S.send('SERVER DE CLIENT lmnop-waterfall SND');
         S.send('SET agc=1 hang=0 thresh=-100 slope=6 decay=1000 manGain=50'); S.send('SET squelch=0 max=0');
-        S.send('SET compression=0'); S.send('SET ident_user=lmnop.games'); kiwiTune(); sendNoise();
+        // compressed audio: a quarter of the data, decoded exactly
+        S.send('SET compression=1'); S.send('SET ident_user=lmnop.games'); kiwiTune(); sendNoise();
         status(retry ? `Reconnected to ${name}.` : `${fallbackNote ? fallbackNote + ' ' : ''}Connected to ${current ? current.name : 'receiver'}. Tap the terrain to tune; audio plays while Listen is on.`);
         wfGuard = setTimeout(() => { if (S === snd && !gotRow) wfWait = false; if (S === snd && !gotRow) status("Connected, but this receiver isn't sending a waterfall right now. Audio still works.", true); }, 8000); }
-    } else if (tag === 'SND' && listening && e.data.byteLength > 10 && !(new Uint8Array(e.data, 3, 1)[0] & 0x18)) {
-      const dv = new DataView(e.data, 10), n = dv.byteLength >> 1, out = new Float32Array(n);
-      for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; play(out, kiwiRate); } };
+    } else if (tag === 'SND' && e.data.byteLength > 10) {
+      const fl = new Uint8Array(e.data, 3, 1)[0]; if (fl & 0x08) return;   // IQ (raw radio samples): never played as sound
+      let out;
+      if (fl & 0x10) {   // compressed (about a quarter of the data): decode every frame, even when not listening, to keep in step
+        const pcm = adpcmDecode(new Uint8Array(e.data, 10), sndAdpcm); if (!listening) return;
+        out = new Float32Array(pcm.length); for (let i = 0; i < pcm.length; i++) out[i] = pcm[i] / 32768;
+      } else { if (!listening) return;
+        const dv = new DataView(e.data, 10), n = dv.byteLength >> 1; out = new Float32Array(n);
+        for (let i = 0; i < n; i++) out[i] = dv.getInt16(i * 2, false) / 32768; }
+      play(out, kiwiRate); } };
   // The waterfall is its own connection. Receivers sometimes drop it while audio carries on (they often have fewer
   // waterfall slots than audio slots): reopen just the waterfall, up to 3 times, rather than leaving it frozen.
   function openWf() {
     let F; try { F = new WebSocket(url('W/F')); } catch { return; }
-    wf = F; F.rows = 0; F.binaryType = 'arraybuffer'; F.onopen = () => F.send('SET auth t=kiwi p=');
+    wf = F; F.rows = 0; F.binaryType = 'arraybuffer'; F.onopen = () => { F.send('SET auth t=kiwi p='); renderSignals(); };   // Scan all bands needs this socket open
     F.onclose = () => { if (F !== wf) return; wf = null; stopScan('waterfall paused'); detReset(); renderSignals();
       if (!live || S !== snd) return;   // before live: the audio connection decides what happens
       if (wfTries < 3) { wfTries++; status(`The waterfall stream dropped; reopening it (try ${wfTries} of 3). Audio continues.`, true);
@@ -1242,12 +1271,15 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
       else { wfWait = false; status('The receiver stopped sending its waterfall; audio continues.', true); } };
   F.onmessage = e => { if (F !== wf || typeof e.data === 'string') return; ka(F); const tag = new TextDecoder().decode(e.data.slice(0, 3));
       if (tag === 'MSG') { const m = parseMsg(e.data);
-        if (m.too_busy !== undefined && live) return appKick(+m.too_busy || 0);
+        // Some receivers send too_busy=0 as they accept a socket (see the audio socket). Only one that arrives after
+        // this waterfall socket was set up is the receiver's limit on outside apps; an early one, which a slow
+        // connection can deliver after the audio socket went live, is not.
+        if (m.too_busy !== undefined) { if (live && F.setUp) return appKick(+m.too_busy || 0); return; }
         if (m.bandwidth) rxTop = kiwiBw = +m.bandwidth;
         if (+m.wf_fft_size > 0) wfFft = +m.wf_fft_size;
         if (+m.zoom_max > 0) wfZmax = +m.zoom_max;
         if (m.wf_setup !== undefined || m.zoom_max !== undefined) { F.send('SERVER DE CLIENT lmnop-waterfall W/F'); F.send('SET maxdb=0 mindb=-100');
-          F.send('SET wf_speed=4'); F.send('SET wf_comp=0'); kiwiCenter(); } }
+          F.send('SET wf_speed=4'); F.send('SET wf_comp=1'); F.setUp = true; kiwiCenter(); } }   // compressed rows: half the data, within ~1.5 dB
       else if (tag === 'W/F' && e.data.byteLength > 16) {
         if (wfTrust) {   // skip rows from before the last re-centre or scan step, which would land at the wrong frequencies
           const dv = new DataView(e.data), startHz = dv.getUint32(4, true) * kiwiBw / (wfFft * 2 ** wfZmax), zm = dv.getUint32(8, true) & 0xffff;
@@ -1257,7 +1289,7 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
         if (wfWait) wfWait = false;
         if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
         if (++F.rows === 60) wfTries = 0;   // flowing again: a later drop gets fresh retries
-        const d = new Uint8Array(e.data, 16), r = new Uint8Array(BINS);
+        const d = wfRow(new Uint8Array(e.data, 16)), r = new Uint8Array(BINS);
         for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
         pushRow(r); } };
   }
@@ -1316,7 +1348,7 @@ setInterval(syncBusy, 200); syncBusy();
 // Version: the page's own (stamped by `npm run release`), and the release the server was last deployed with.
 { const m = document.querySelector('meta[name=app-version]'), v = m?.content || '?', d = m?.dataset.date;
   const when = d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-  $('verLine').innerHTML = `Waterfall Radio <b>v${esc(v)}</b>${when ? ' · released ' + esc(when) : ''}<span id="srvVer"></span>`;
+  $('verLine').innerHTML = `Skydial <b>v${esc(v)}</b>${when ? ' · released ' + esc(when) : ''}<span id="srvVer"></span>`;
   fetch(API + '/healthz', { cache: 'no-store' }).then(r => r.json()).then(h => { if (h.version) $('srvVer').textContent = ` · server v${h.version}`; }).catch(() => {}); }
 
 /* ---------- loop ---------- */
