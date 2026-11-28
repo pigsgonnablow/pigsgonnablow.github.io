@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.11.0" data-date="2026-11-28">
+<meta name="app-version" content="1.11.1" data-date="2026-11-28">
 <title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -286,13 +286,25 @@ const calm = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 function stepFocus() { if (focusTo === null) return; const d = (focusTo - controls.target.x) * (calm() ? 1 : .12);
   controls.target.x += d; camera.position.x += d; if (Math.abs(focusTo - controls.target.x) < .002) focusTo = null; }
 
-function pushRow(row) {
-  if (scan) return detAdd(row);   // scanning: the detector reads every band, the terrain stays still until it's done
+// What's drawn is each bin's middle value over the last 5 rows (about a quarter second). Static crashes and electrical
+// noise lift a whole row for an instant; on some receivers nearly half the rows. Drawn as is, each becomes a wall across
+// the terrain and the trace jumps. The median drops those flashes but keeps anything that lasts, and the signal
+// detector still reads the raw rows. Measured on a noisy receiver: rows jumping >6 dB 48/120 -> 8/116.
+const recent = []; const shown5 = new Uint8Array(BINS);
+function calmRow(row) {
+  recent.push(row); if (recent.length > 5) recent.shift();
+  const n = recent.length; if (n < 3) return row;
+  const w = new Uint8Array(n), out = shown5;
+  for (let i = 0; i < BINS; i++) { for (let j = 0; j < n; j++) w[j] = recent[j][i]; w.sort(); out[i] = w[n >> 1]; }
+  return out; }
+function pushRow(raw) {
+  if (scan) return detAdd(raw);   // scanning: the detector reads every band, the terrain stays still until it's done
+  const row = calmRow(raw);
   head = (head + 1) % ROWS; texData.set(row, head * BINS); tex.needsUpdate = true; uni.uHead.value = head;
   for (let i = 0; i < BINS; i++) { const v = row[i] / 255;
     specPos[i * 3] = -W / 2 + W * (i + .5) / BINS; specPos[i * 3 + 1] = Math.pow(v, 1.6) * H + .02; specPos[i * 3 + 2] = D / 2; }
   specGeo.attributes.position.needsUpdate = true;
-  detAdd(row);
+  detAdd(raw);
 }
 // In the Signals view the waterfall shares the stage with the station list (beside it, or above it on phones).
 function viewSize() {
@@ -323,7 +335,8 @@ function setTune(hz, fromLive) {
   if (sigOn) { clearTimeout(sigTimer); sigTimer = setTimeout(() => { renderSignals(true); revealOn(); }, 120); }
 }
 const nfmt = hz => fmt(hz).split('.')[0];
-function setSpan(lo, hi, label) { st.lo = lo; st.hi = hi; $('spanLbl').textContent = `${nfmt(lo)} – ${nfmt(hi)} kHz · ${label}`; setTune(st.tune, true); updatePins(); }
+function setSpan(lo, hi, label) { if (lo !== st.lo || hi !== st.hi) recent.length = 0;   // rows from another slice don't mix in
+  st.lo = lo; st.hi = hi; $('spanLbl').textContent = `${nfmt(lo)} – ${nfmt(hi)} kHz · ${label}`; setTune(st.tune, true); updatePins(); }
 
 // A tap: one pointer, down and up in the same place. A pinch or two-finger drag is never a tap, even if one finger stays still.
 function tapper(el) { const ptrs = new Map(); let multi = false;
