@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.10.1" data-date="2026-11-28">
+<meta name="app-version" content="1.11.0" data-date="2026-11-28">
 <title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -56,6 +56,11 @@ body.landing #stage,body.landing #controls,body.landing .onlive,body:not(.landin
 @media(max-width:860px){.stage.sigmode .loadover{right:0;bottom:auto;height:250px}}
 .btn.main{background:var(--coral);border-color:var(--coral);color:#1a0d08;min-width:132px}
 .btn.main.on{background:#182a38;color:var(--coral)}
+/* "Next step": the one control that gets you closer to hearing something glows softly until you use it */
+.next{position:relative;box-shadow:0 0 0 0 rgba(255,122,89,.7);animation:nextGlow 1.6s ease-out infinite}
+@keyframes nextGlow{0%{box-shadow:0 0 0 0 rgba(255,122,89,.65)}70%{box-shadow:0 0 0 12px rgba(255,122,89,0)}100%{box-shadow:0 0 0 0 rgba(255,122,89,0)}}
+label.next{border-radius:8px;padding:2px 6px;outline:2px solid var(--coral);box-shadow:none;animation:none}
+@media (prefers-reduced-motion:reduce){.next{animation:none;outline:2px solid var(--coral);outline-offset:3px}}
 .seg{display:inline-flex;border:1px solid var(--line);border-radius:10px;overflow:hidden}
 .seg button{min-height:44px;padding:0 16px;border:0;background:transparent;color:var(--mute);font-size:16px;font-weight:600;cursor:pointer}
 .seg button[aria-pressed=true]{background:var(--teal);color:#06201d}
@@ -177,7 +182,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <div class="seg" role="group" aria-label="View"><button id="viewWf" aria-pressed="true">Waterfall</button><button id="viewSig" aria-pressed="false">Signals</button></div>
     <div class="steps"><button class="btn" data-step="-1">−1k</button><button class="btn" data-step="-0.1">−.1</button><button class="btn" data-step="0.1">+.1</button><button class="btn" data-step="1">+1k</button></div>
     <label>Freq <input id="freq" inputmode="decimal" size="9" value="9650.00" aria-label="Frequency in kHz"> kHz</label>
-    <label>Volume <input type="range" id="vol" min="0" max="1" step="0.01" value="0.7"></label>
+    <label id="volBox">Volume <input type="range" id="vol" min="0" max="1" step="0.01" value="0.7"></label>
     <div class="noise" role="group" aria-label="Noise filters (done by the receiver)">
       <label title="Noise reduction, done by the receiver: Reduce is gentle, Strong removes more hiss but can sound watery">Noise
         <select id="nrLevel"><option value="off">Off</option><option value="light">Reduce</option><option value="strong">Strong</option></select></label>
@@ -838,7 +843,7 @@ async function loadDir() {
     try { res = await fetch(API + '/api/receivers', { cache: 'no-store' }); } catch {}
     if (res && res.ok) { try { d = await res.json(); } catch {} }
     if (d && Array.isArray(d.receivers) && d.receivers.length) {
-      RX = d.receivers; dirMode = 'server';
+      RX = d.receivers; dirMode = 'server'; checkRelay();
       const mins = d.updated ? Math.round((Date.now() - Date.parse(d.updated)) / 60000) : null;
       $('dirNote').textContent = `${RX.length} public receivers` + (mins !== null ? ` · list updated ${mins < 2 ? 'just now' : mins + ' min ago'}` : '');
       gDirty = true; renderList(); return;
@@ -867,6 +872,28 @@ setInterval(async () => {
 }, 10 * 60e3);
 const covers = r => r.lo <= st.tune && st.tune <= r.hi;
 const free = r => Math.max(0, r.max - r.users);
+// The free relay has a daily data allowance. Once it's used up (for everyone, or for this visitor), receivers that need
+// the relay can't be reached until midnight UTC, but receivers the browser reaches directly still work, so the page
+// says so plainly, labels which is which, and steers people to the direct ones instead of failing one by one.
+let relayShut = null, relayReset = 0;   // 'relay daily limit' | 'daily limit for your address' | null; when it resets (ms)
+const needsRelay = r => location.protocol === 'https:' && dirMode === 'server' && r.origin.startsWith('http:');
+const relayBlocked = r => !!relayShut && needsRelay(r);
+function untilReset() { const m = Math.max(1, Math.round((relayReset - Date.now()) / 60e3)), h = Math.floor(m / 60);
+  return h ? `${h} h ${m % 60} min` : `${m} min`; }
+function relayMsg() {
+  const who = relayShut === 'daily limit for your address' ? 'You’ve used today’s listening allowance on this site’s free relay' : 'This site’s free relay has used up today’s data allowance';
+  const direct = RX.some(r => !needsRelay(r) && !noApp(r) && !r.offline);
+  return `${who} (it resets in ${untilReset()}). ${direct ? 'Receivers that connect directly still work: they’re listed first, and the rest say “relay used up”.' : 'Please come back then.'}`; }
+function shutRelay(why, mins) { const was = relayShut; relayShut = why; relayReset = mins ? Date.now() + mins * 60e3 : Math.ceil(Date.now() / 86400e3) * 86400e3;
+  if (was !== why) { gDirty = true; renderList(true); if (selected) select(selected, false, true); } }
+async function checkRelay() {
+  if (location.protocol !== 'https:' || dirMode !== 'server') return;
+  try { const r = await (await fetch(API + '/api/relay', { cache: 'no-store', signal: AbortSignal.timeout(8000) })).json();
+    if (r.open) { if (relayShut) { relayShut = null; gDirty = true; renderList(true); } return; }
+    const first = !relayShut; shutRelay(r.why, r.resetsInMin);
+    if (first && !snd && !checking) status(relayMsg(), true);
+  } catch {} }
+setInterval(checkRelay, 5 * 60e3);
 // Receivers that limit "outside apps". A KiwiSDR decides 10 s after you connect whether you came through its own web
 // page; if not, its owner's limit on other apps applies (often 0) and it disconnects with too_busy=<limit>. That is the
 // owner's choice, so we don't try to get around it: remember the receiver and prefer others.
@@ -896,6 +923,7 @@ function ranked() {
   const list = RX.filter(r => !r.offline && covers(r) && (!$('freeOnly').checked || free(r) > 0));
   if ($('sort').value === 'near') { const c = viewCenter(); for (const r of list) r._km = usable(r) ? gcKm(c, r) : Infinity; list.sort((a, b) => a._km - b._km); }
   else list.sort((a, b) => ((b.snr ?? 10) + 3 * Math.min(free(b), 3)) - ((a.snr ?? 10) + 3 * Math.min(free(a), 3)));
+  if (relayShut) list.sort((a, b) => relayBlocked(a) - relayBlocked(b));   // stable: keeps the chosen order within each group
   return list.filter(r => !noApp(r));   // receivers whose owners don't allow apps aren't offered at all
 }
 let listTimer = null, nearTimer = null;
@@ -907,7 +935,7 @@ function renderList(force) {
   const list = ranked().slice(0, 12), near = $('sort').value === 'near';
   const html = list.length ? list.map((r, i) => `<li><button data-i="${i}" class="${r === selected ? 'sel' : ''}">
     <span class="nm">${esc(r.name)}</span><span class="lc">${esc(r.loc || r.antenna || r.id)}</span>
-    <span class="sl">${ownLimit(r) ? '<b>web page only</b>' : `<b>${free(r)}/${r.max}</b> free`}<br>${near ? (isFinite(r._km) ? Math.round(r._km).toLocaleString() + ' km' : 'no GPS') : r.snr != null ? 'SNR ' + r.snr + ' dB' : ''}</span></button></li>`).join('')
+    <span class="sl">${ownLimit(r) ? '<b>web page only</b>' : relayBlocked(r) ? '<b>relay used up</b>' : `<b>${free(r)}/${r.max}</b> free`}<br>${near ? (isFinite(r._km) ? Math.round(r._km).toLocaleString() + ' km' : 'no GPS') : r.snr != null ? 'SNR ' + r.snr + ' dB' : ''}</span></button></li>`).join('')
     : `<li class="empty">${RX.length ? 'No receivers match. Untick "Free slots only" or tune elsewhere.' : dirMode === 'loading' ? '<span class="spin"></span>Loading receivers…' : 'No receiver list available.'}</li>`;
   $('rxList').onclick = e => { const b = e.target.closest('button'); if (b) select(list[+b.dataset.i], true); };
   if (html !== rxHtml) { rxHtml = html; swapHtml($('rxList'), html, 'data-i'); }   // only touch the list when it actually changed
@@ -916,7 +944,7 @@ function select(r, fly, quiet) {
   if (!quiet && retryTimer && r !== current) disconnect(`Stopped reconnecting to ${current ? current.name : 'the receiver'}.`);
   selected = r; connectBtn(); gDirty = true; renderList(true); if (!r) { $('rxCard').hidden = true; return; }
   $('rxCard').hidden = false; $('rxName').textContent = r.name;
-  $('rxMeta').textContent = [r.loc, ownLimit(r) ? (ownLimit(r).limit ? 'its few slots for apps were taken' : 'only allows its own web page') : `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
+  $('rxMeta').textContent = [r.loc, relayBlocked(r) ? `needs the relay, which is used up until it resets in ${untilReset()}` : '', ownLimit(r) ? (ownLimit(r).limit ? 'its few slots for apps were taken' : 'only allows its own web page') : `${free(r)} of ${r.max} slots free`, r.snr != null ? `HF SNR ${r.snr} dB` : '', r.antenna,
     `${(r.lo / 1e6).toFixed(1)}–${(r.hi / 1e6).toFixed(1)} MHz`].filter(Boolean).join(' · ');
   if (fly && usable(r)) flyTo(r.lat, r.lon);
 }
@@ -1054,7 +1082,7 @@ function putAttr(g, name, arr, k) { const a = g.getAttribute(name);
 function rebuildPoints() {
   gDirty = false; const list = RX.filter(r => usable(r) && !noApp(r)), n = list.length, pos = new Float32Array(n * 3), col = new Float32Array(n * 3), size = new Float32Array(n);
   list.forEach((r, i) => { ll(r.lat, r.lon, 1.01).toArray(pos, i * 3);
-    const c = !covers(r) ? COL.off : free(r) === 0 ? COL.full : free(r) === 1 ? COL.last : COL.free; c.toArray(col, i * 3);
+    const c = !covers(r) || relayBlocked(r) ? COL.off : free(r) === 0 ? COL.full : free(r) === 1 ? COL.last : COL.free; c.toArray(col, i * 3);
     size[i] = !covers(r) || ($('freeOnly').checked && free(r) === 0) ? 4 : 7; });
   const g = gPts.geometry; putAttr(g, 'position', pos, 3); putAttr(g, 'aColor', col, 3); putAttr(g, 'aSize', size, 1);
   g.computeBoundingSphere(); gPts.userData.list = list;
@@ -1132,7 +1160,7 @@ function endSession(msg) { clearTimeout(retryTimer); retryTimer = null; kiwiClos
 // If the receiver you picked can't take you, move to the closest free one and say so plainly.
 function tryNext(why, from) {
   const live = snd && current;   // already listening somewhere: never "switch" back to it, just stay
-  const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0 && !appLimited(r) && !(live && r.origin === current.origin));
+  const pool = ranked().filter(r => !tried.has(r.origin) && free(r) > 0 && !appLimited(r) && !relayBlocked(r) && !(live && r.origin === current.origin));
   if (from && usable(from)) pool.sort((a, b) => (usable(a) ? gcKm(from, a) : 1e9) - (usable(b) ? gcKm(from, b) : 1e9));
   const next = pool[0];
   if (tried.size >= 3 || !next) { if (!snd) current = null; connectBtn();
@@ -1145,6 +1173,7 @@ let connectSeq = 0;
 async function connectRx(rx, auto, origFrom) {
   const seq = ++connectSeq; checking = false;
   if (!auto) { tried = new Set(); fallbackNote = ''; drops = []; } tried.add(rx.origin); const from = origFrom || rx;   // `current` changes only once the switch really happens
+  if (relayBlocked(rx)) return tryNext(`${rx.name} needs this site’s relay, which is used up for today (it resets in ${untilReset()}).`, from);
   const listed = dirMode === 'server' && RX.some(r => r.origin === rx.origin);
   // Use the relay only when the browser can't connect itself: an https page can't open a plain ws:// receiver.
   // Direct connections spread load and keep each listener's own IP, which receiver owners use for fair-use limits.
@@ -1253,10 +1282,10 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
     if (e.code === 4429 && e.reason === 'receiver busy on relay') return fail('has no free slots on this site’s relay right now.');
     if (e.code === 4429 && e.reason === 'receiver refused recently') return fail('turned this site away a moment ago (full, down, or not accepting apps).');
     if (e.code === 4429 && e.reason === 'receiver does not accept apps') { rememberNoApps(origin, 0); return fail('only allows its own web page, not apps like this one.'); }
+    if (e.code === 4429 && /daily limit/.test(e.reason)) { shutRelay(e.reason); checkRelay();
+      return live ? endSession(relayMsg()) : fail(`needs this site’s relay, which is used up for today (it resets in ${untilReset()}).`); }   // fail() moves on to the nearest direct receiver
     if (e.code === 4429) return endSession({
       'relay full': 'This site’s relay is full right now. Try again in a few minutes.',
-      'daily limit for your address': 'You’ve reached today’s listening limit on this site (it keeps the free service running). It resets at midnight UTC.',
-      'relay daily limit': 'This site has used today’s data allowance for its free relay. It resets at midnight UTC; sorry about that.',
     }[e.reason] || 'Too many connections from your network through this site right now. Close other Skydial tabs or wait a minute.');
     if (!live) return fail(ended || (busy ? 'is full right now.' : "didn't accept the connection."));
     if (ended) return endSession(`${name} ${ended}`);            // the receiver said why: respect it
@@ -1373,8 +1402,14 @@ function syncLanding() {
   // connecting: scroll up to the radio; session over: bring the message saying why into view (it sits under the list)
   requestAnimationFrame(() => { if (!want) scrollTo({ top: 0, behavior: how }); else $('status').scrollIntoView({ block: 'nearest', behavior: how }); });
 }
+// Point at the next step toward hearing something: Connect once a receiver is picked, Listen once it's live,
+// the volume if it's all the way down. One control at a time, and nothing once you're listening.
+function syncNext() {
+  const live = !!snd && $('what').textContent.startsWith('Live');
+  const next = checking || retryTimer ? null : !snd && selected ? 'connect' : live && !listening ? 'power' : live && listening && +$('vol').value === 0 ? 'volBox' : null;
+  for (const id of ['connect', 'power', 'volBox']) $(id).classList.toggle('next', id === next); }
 function syncBusy() {
-  syncLanding();
+  syncLanding(); syncNext();
   const tog = (id, on) => $(id).classList.toggle('busy', !!on);
   // Real progress only: a spot takes a fixed ~5.7 s to listen to; a scan step ends after 12 waterfall rows or 6 s.
   const hp = hunt && huntProg ? (huntMax = Math.max(huntMax, (huntProg.done + Math.min(1, (performance.now() - huntProg.t0) / 5700)) / huntProg.total)) : null;
