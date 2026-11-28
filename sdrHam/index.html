@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Where the Skydial server runs. Empty = same site as this page. e.g. https://radio.lmnop.games -->
 <meta name="radio-api" content="https://waterfall-radio.onrender.com">
-<meta name="app-version" content="1.9.0" data-date="2026-11-27">
+<meta name="app-version" content="1.9.1" data-date="2026-11-27">
 <title>Skydial</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
@@ -189,7 +189,7 @@ label{font-size:14px;color:var(--mute);display:inline-flex;align-items:center;ga
     <div class="picker">
       <div class="globeBox" id="globeBox"><canvas id="globe" aria-label="Globe of public receivers; tap a dot to pick one"></canvas>
         <div class="loadover" id="globeLoad"><span class="spin"></span><span id="globeLoadText">Loading receivers…</span></div>
-        <div class="gzoom"><button class="btn" id="gIn" aria-label="Zoom in">+</button><button class="btn" id="gOut" aria-label="Zoom out">−</button><button class="btn" id="gSpin" aria-pressed="true" aria-label="Stop the globe spinning" title="Stop the globe spinning"></button></div>
+        <div class="gzoom"><button class="btn" id="gIn" aria-label="Zoom in">+</button><button class="btn" id="gOut" aria-label="Zoom out">−</button><button class="btn" id="gSpin" aria-pressed="true" aria-label="Spin the globe" title="Stop the globe spinning"></button></div>
         <div class="gtip" id="gTip" hidden></div>
         <div class="legend"><span><i style="background:var(--teal)"></i>Free slots</span><span><i style="background:var(--gold)"></i>Last slot</span><span><i style="background:var(--coral)"></i>Full</span></div>
         <p class="dirnote" id="dirNote">Loading receivers…</p></div>
@@ -325,7 +325,8 @@ canvas.addEventListener('pointerup', e => {
   const r = canvas.getBoundingClientRect(), ray = new THREE.Raycaster();
   ray.setFromCamera(new THREE.Vector2((e.clientX - r.left) / r.width * 2 - 1, -(e.clientY - r.top) / r.height * 2 + 1), camera);
   const hit = ray.intersectObject(plane)[0];
-  if (hit) setTune(st.lo + hit.uv.x * (st.hi - st.lo));
+  const [lo, hi] = scan ? scan.span : [st.lo, st.hi];   // during a scan the frozen terrain still shows the band you were on
+  if (hit) setTune(lo + hit.uv.x * (hi - lo));
 });
 document.querySelectorAll('[data-step]').forEach(b => b.onclick = () => setTune(st.tune + b.dataset.step * 1000));
 $('freq').addEventListener('change', () => { const v = parseFloat($('freq').value); if (v > 0) setTune(v * 1000); });
@@ -791,15 +792,17 @@ function scanPlan() {
 function wfGoto(cf) { const span = kiwiBw / 2 ** ZOOM;
   wf.send(`SET zoom=${ZOOM} cf=${(cf / 1000).toFixed(3)}`); wfAskedAt = performance.now(); setSpan(cf - span / 2, cf + span / 2, 'scanning'); }
 const scanIdle = () => { ring('scanBtn', null); $('scanBtn').textContent = wf ? 'Scan all bands' : 'Scan (live receivers only)'; $('scanBtn').disabled = !wf; };
-function endScan() { if (!scan) return; clearTimeout(scan.timer); scan = null; scanIdle();
+// End a scan: put back the band the terrain was frozen on, so taps line up and it carries on rather than being wiped.
+function unScan() { const sp = scan.span; clearTimeout(scan.timer); scan = null; scanIdle(); if (sp) { st.lo = sp[0]; st.hi = sp[1]; } }
+function endScan() { if (!scan) return; unScan();
   if (wf && wf.readyState === 1) kiwiCenter(); else setSpan(st.lo, st.hi, 'waterfall paused'); renderSignals(); }
 // Stop a scan without asking the receiver for anything (its waterfall connection is gone).
-function stopScan(label) { if (!scan) return; clearTimeout(scan.timer); scan = null; scanIdle(); setSpan(st.lo, st.hi, label); }
+function stopScan(label) { if (!scan) return; unScan(); setSpan(st.lo, st.hi, label); }
 $('scanBtn').onclick = () => {
   if (scan) return endScan();
   if (hunt) stopHunt('Stopped looking for a voice to scan the bands.');
   if (!wf || wf.readyState !== 1) return;
-  scan = { plan: scanPlan(), i: 0, timer: null, at: performance.now() };
+  scan = { plan: scanPlan(), i: 0, timer: null, at: performance.now(), span: [st.lo, st.hi] };   // the band the frozen terrain shows
   // Every step is guarded: whatever goes wrong, the scan ends cleanly instead of sitting on one slice for good.
   const step = () => { try { if (!scan) return; if (scan.i >= scan.plan.length || !wf || wf.readyState !== 1) return endScan();
     wfGoto(scan.plan[scan.i++]); scan.at = performance.now(); renderSignals(true); const t0 = performance.now();
@@ -945,8 +948,8 @@ try { const v = localStorage.getItem('wr.spin'); if (v === '1' || v === '0') spi
 const ICON_PAUSE = '<svg viewBox="0 0 16 16" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg>';
 const ICON_SPIN = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11a.8.8 0 0 0 1.2.7l9-5.5a.8.8 0 0 0 0-1.4l-9-5.5A.8.8 0 0 0 4 2.5z"/></svg>';
 function setSpin(on) {
-  if (gCtl) gCtl.autoRotate = on; const b = $('gSpin'), label = on ? 'Stop the globe spinning' : 'Spin the globe';
-  b.innerHTML = on ? ICON_PAUSE : ICON_SPIN; b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-label', label); b.title = label;
+  if (gCtl) gCtl.autoRotate = on; const b = $('gSpin');   // a toggle: one label, its state in aria-pressed
+  b.innerHTML = on ? ICON_PAUSE : ICON_SPIN; b.setAttribute('aria-pressed', String(on)); b.title = on ? 'Stop the globe spinning' : 'Spin the globe';
 }
 function initGlobe() {
   const cv = $('globe');
@@ -1044,10 +1047,11 @@ function rebuildPoints() {
   if (gSel.visible) s.computeBoundingSphere();   // the ring moves: keep three.js from culling it at the old spot
 }
 function flyTo(lat, lon) { if (!gCam) return; setSpin(false); zoomAnim = null;   // keep the picked receiver in view
-  const d = gCam.position.length(); flight = { from: gCam.position.clone().normalize(), to: ll(lat, lon), t0: performance.now(), d0: d, d1: Math.min(d, 2.2) }; }   // fly to it and come in a little
+  const d = gCam.position.length(); flight = { from: gCam.position.clone().normalize(), to: ll(lat, lon), t0: performance.now(), d0: d, d1: Math.min(d, 2.2),
+    ms: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 700 }; }   // fly to it and come in a little (or jump, for reduced motion)
 function renderGlobe() {
   if (gDirty) rebuildPoints();
-  if (flight) { const k = Math.min(1, (performance.now() - flight.t0) / 700), e = k * k * (3 - 2 * k);
+  if (flight) { const k = flight.ms ? Math.min(1, (performance.now() - flight.t0) / flight.ms) : 1, e = k * k * (3 - 2 * k);
     gCam.position.copy(flight.from.clone().lerp(flight.to, e).normalize().multiplyScalar(flight.d0 + (flight.d1 - flight.d0) * e)); if (k >= 1) flight = null; }
   if (zoomAnim) { const k = Math.min(1, (performance.now() - zoomAnim.t0) / 350), e = k * k * (3 - 2 * k);
     gCam.position.setLength(zoomAnim.from + (zoomAnim.to - zoomAnim.from) * e); if (k >= 1) zoomAnim = null; }
@@ -1069,9 +1073,14 @@ const PB = { am: [-4900, 4900], usb: [300, 2700], lsb: [-2700, -300], cw: [300, 
 function status(msg, err) { $('status').textContent = msg; $('status').classList.toggle('err', !!err); }
 function parseMsg(buf) { const o = {}; for (const kv of new TextDecoder().decode(buf.slice(4)).split(' ')) { const i = kv.indexOf('=');
   if (i > 0) { try { o[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch { o[kv.slice(0, i)] = kv.slice(i + 1); } } else if (kv) o[kv] = true; } return o; }
+let tuneSent = -1e9, tuneTimer = null;
+function sendTune() {   // sends whatever the dial says now, so the last position of a held key or drag always arrives
+  clearTimeout(tuneTimer); tuneTimer = null; if (!snd || snd.readyState !== 1) return;
+  const m = $('mode').value, [lo, hi] = PB[m]; snd.send(`SET mod=${m} low_cut=${lo} high_cut=${hi} freq=${(st.tune / 1000).toFixed(3)}`); tuneSent = performance.now();
+}
 function kiwiTune() {
   if (!snd || snd.readyState !== 1) return; if (scan) endScan(); const m = $('mode').value, [lo, hi] = PB[m];
-  snd.send(`SET mod=${m} low_cut=${lo} high_cut=${hi} freq=${(st.tune / 1000).toFixed(3)}`);
+  const wait = 60 - (performance.now() - tuneSent); if (wait <= 0) sendTune(); else if (!tuneTimer) tuneTimer = setTimeout(sendTune, wait);
   st.pb = [lo, hi]; const span = st.hi - st.lo, x = (st.tune - st.lo) / span; uni.uLo.value = lo / span; uni.uHi.value = hi / span;
   if (x < .1 || x > .9) kiwiCenter(); resetIdle();
   $('what').textContent = `Live · ${m.toUpperCase()}${current ? ' · ' + current.name.slice(0, 40) : ''}`;
@@ -1089,7 +1098,7 @@ let lastAct = Date.now(); const IDLE_RECONNECT_MS = 10 * 60e3;
 for (const ev of ['pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(ev, () => { lastAct = Date.now(); }, { capture: true, passive: true });
 function resetIdle() { clearTimeout(idle); if (listening || !snd) return;
   idle = setTimeout(() => { disconnect('Disconnected after 30 minutes with Listen off, to free the receiver slot for others.'); }, 30 * 60e3); }
-function kiwiClose() { wfWait = false; if (scan) { clearTimeout(scan.timer); scan = null; } if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
+function kiwiClose() { wfWait = false; clearTimeout(tuneTimer); tuneTimer = null; if (scan) unScan(); if (hunt) { hunt = null; probe = null; $('voiceBtn').textContent = 'Find a voice'; } detReset(); flushAudio();
   for (const w of [snd, wf]) try { w && w.close(); } catch {} snd = wf = null; clearInterval(keep); clearTimeout(idle);
   $('connectHost').textContent = 'Connect'; connectBtn(); scanIdle();
   if (snd === null && $('what').textContent.startsWith('Live')) { $('what').textContent = 'Not connected'; setSpan(st.lo, st.hi, 'not connected'); } }
@@ -1155,18 +1164,24 @@ let session = null;   // identity of the live session (kept across its own recon
 // KiwiSDR compression: IMA ADPCM, 4 bits a sample, two a byte, low nibble first (checked against a live receiver).
 const ADPCM_STEP = [7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767];
 const ADPCM_ADJ = [-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8];
-function adpcmDecode(bytes, st) {
+function adpcmDecode(bytes, st, lo = -32768, hi = 32767) {
   const out = new Int16Array(bytes.length * 2); let k = 0, { i, p } = st;
   for (let n = 0; n < bytes.length; n++) for (let h = 0; h < 2; h++) {
     const c = h ? bytes[n] >> 4 : bytes[n] & 15, step = ADPCM_STEP[i];
     let d = step >> 3; if (c & 1) d += step >> 2; if (c & 2) d += step >> 1; if (c & 4) d += step; if (c & 8) d = -d;
-    p = Math.max(-32768, Math.min(32767, p + d)); i = Math.max(0, Math.min(88, i + ADPCM_ADJ[c])); out[k++] = p; }
+    p = Math.max(lo, Math.min(hi, p + d)); i = Math.max(0, Math.min(88, i + ADPCM_ADJ[c])); out[k++] = p; }
   st.i = i; st.p = p; return out;
 }
-// A waterfall row: compressed rows are half the size, each one decoded on its own as (value - 128) * 256. The decoder
-// takes a few bins to catch up at the start of each row, so those take the first settled value (no dark edge).
-function wfRow(d) {
-  if (d.length * 2 !== wfFft) return d;
+// A waterfall row. Receivers flag compressed rows (bit 0 of the flags in the zoom word); many ignore the request and
+// send plain rows, which pass through. Compressed rows seen on live receivers are half size, each decoded on its own as
+// (value - 128) * 256; the decoder takes a few bins to catch up at the start, so those take the first settled value.
+// KiwiSDR's source also describes a form with 10 padding samples first, decoded in 0..255: handled too, though no
+// receiver we've checked sends it.
+function wfRow(d, flags) {
+  const comp = (flags & 1) || d.length * 2 === wfFft;
+  if (!comp) return d;
+  if (d.length * 2 === wfFft + 10) return Uint8Array.from(adpcmDecode(d, { i: 0, p: 0 }, 0, 255).subarray(10));
+  if (d.length * 2 !== wfFft) return null;   // a compressed size we don't know: skip the row rather than draw nonsense
   const x = adpcmDecode(d, { i: 0, p: 0 }), r = new Uint8Array(x.length);
   for (let n = 0; n < x.length; n++) r[n] = Math.max(0, Math.min(255, (x[n] >> 8) + 128));
   r.fill(r[WF_SETTLE], 0, WF_SETTLE); return r;
@@ -1289,7 +1304,8 @@ function kiwiOpen(origin, viaRelay, from, retry = 0) {
         if (wfWait) wfWait = false;
         if (!gotRow) { gotRow = true; clearTimeout(wfGuard); }
         if (++F.rows === 60) wfTries = 0;   // flowing again: a later drop gets fresh retries
-        const d = wfRow(new Uint8Array(e.data, 16)), r = new Uint8Array(BINS);
+        const d = wfRow(new Uint8Array(e.data, 16), new DataView(e.data).getUint32(8, true) >>> 16); if (!d) return;
+        const r = new Uint8Array(BINS);
         for (let i = 0; i < BINS; i++) { const dbm = d[Math.floor(i * d.length / BINS)] - 255; r[i] = Math.max(0, Math.min(255, (dbm + 125) / 85 * 255)); }
         pushRow(r); } };
   }
@@ -1329,7 +1345,9 @@ let landing = true;
 function syncLanding() {
   const want = !(snd || checking || wfWait); if (want === landing) return;
   landing = want; document.body.classList.toggle('landing', want);
-  if (!want) requestAnimationFrame(() => { scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); });
+  const how = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+  // connecting: scroll up to the radio; session over: bring the message saying why into view (it sits under the list)
+  requestAnimationFrame(() => { if (!want) scrollTo({ top: 0, behavior: how }); else $('status').scrollIntoView({ block: 'nearest', behavior: how }); });
 }
 function syncBusy() {
   syncLanding();
