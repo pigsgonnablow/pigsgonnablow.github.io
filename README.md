@@ -24,7 +24,7 @@ The filter buttons appear on their own once there are games in more than one sta
 
 ## Update a game that lives in this repo
 
-Some games live in their own folder here instead of their own repo (`sdrHam/`, `driftspan/`). The folder's `index.html` is the whole game.
+Some games live in their own folder here instead of their own repo (`skydial/`, `driftspan/`; `sdrHam/` only redirects to `skydial/`). The folder's `index.html` is the whole game.
 
 Driftspan is one file. To update it, replace `driftspan/index.html` with the new `driftspan.html` and push to `main`:
 
