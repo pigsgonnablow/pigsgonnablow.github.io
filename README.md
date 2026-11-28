@@ -4,7 +4,7 @@ The LMNOP Games studio hub. It's a plain static site, so there's no build step, 
 
 ## Add a game
 
-1. Put a screenshot in `assets/games/` (16:10 works best, about 800px wide).
+1. Put a picture in `assets/games/` (16:10, 800×500, JPEG). Make it from the game's own art or a real screenshot, with the game's panels hidden if they get in the way. For example, `skydial.jpg` is the game's own globe, rendered full screen with live receiver data and everything else on the page hidden.
 2. Open `games.js` and copy one of the blocks.
 3. Fill in the title, a one-line tagline, the status (`playable`, `prototype` or `coming-soon`), the link and the picture.
    A game in another pigsgonnablow repo with Pages turned on lives at `https://lmnop.games/<repo-name>/`, so link that. Leave `url` out to show "Coming soon".

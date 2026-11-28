@@ -46,6 +46,7 @@ window.LMNOP_GAMES = [
     tagline: "Live shortwave radio from around the globe.",
     status: "prototype",
     url: "https://lmnop.games/skydial/",
+    image: "assets/games/skydial.jpg",
     color: "#2bb3a3",
     tags: ["Live radio", "3D"],
   },
